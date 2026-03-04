@@ -22,8 +22,8 @@ class ConnectionDetails(BaseModel):
 
 class AIPrompt(BaseModel):
     prompt: str
-    model: str
-    api_key: str
+    command: str
+    db_config: ConnectionDetails
     schema_json: Dict[str, Any]
 
 import socket
@@ -191,17 +191,100 @@ async def launch_cli(details: CLILaunchDetails):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to launch CLI: {str(e)}")
 
+import json
+import re
+
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
-    """Takes user's prompt + JSON schema, constructs context window, calls subprocess."""
-    # Placeholder for orchestrator logic
-    return {"sql": "SELECT * FROM users LIMIT 10;"}
+    """Takes user's prompt + JSON schema, constructs context window, calls subprocess, extracts/runs SQL."""
+    try:
+        cfg = payload.db_config
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+        
+        db_url = ""
+        if cfg.db_type == "postgres":
+            db_url = f"postgresql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+        else:
+            db_url = f"mysql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+            
+        env = os.environ.copy()
+        env["DATABASE_URL"] = db_url
 
-@app.post("/db/execute")
-async def db_execute(sql: str):
-    """Executes the generated SQL, wrapped in a transaction."""
-    # Hardcoded Security Constraints here
-    return {"status": "success", "data": [{"id": 1, "name": "Test User"}]}
+        augmented_prompt = (
+            f"You are an AI database engineer. Given this {cfg.db_type} database schema: "
+            f"{json.dumps(payload.schema_json)}\n\n"
+            f"User request: {payload.prompt}\n\n"
+            f"Provide your answer. IF you determine that a SQL query needs to be executed "
+            f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block."
+        )
+
+        cmd_to_run = payload.command
+        
+        # We explicitly write the massive schema + prompt context to a temporary file 
+        # and pipe it directly to the CLI tool using standard input redirection.
+        # This completely bypasses Windows CMD's 8191 character argument limit.
+        import tempfile
+        
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+            tf.write(augmented_prompt)
+            temp_file_path = tf.name
+            
+        try:
+            # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
+            # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
+            process = subprocess.run(
+                f'{cmd_to_run} < "{temp_file_path}"', 
+                env=env, capture_output=True, text=True, shell=True
+            )
+            output = process.stdout.strip()
+            error_output = process.stderr.strip()
+        finally:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+        
+        if not output and error_output:
+            return {"status": "error", "message": f"CLI Error: {error_output}"}
+            
+        if not output:
+             output = "No valid text output returned from CLI."
+             
+        # Extract SQL and execute it
+        extracted_sql = None
+        execution_results = []
+        sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
+        
+        if sql_match:
+            extracted_sql = sql_match.group(1).strip()
+            # Open direct session using the injected credentials
+            session = get_db_connection(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+                user=cfg.user, password=cfg.password, dbname=cfg.database
+            )
+            try:
+                # Execute the modeled SQL directly on the live DB
+                result_proxy = session.execute(text(extracted_sql))
+                if result_proxy.returns_rows:
+                    rows = result_proxy.fetchall()
+                    # Convert row tuples to generic dicts safely using mapping
+                    keys = result_proxy.keys()
+                    execution_results = [dict(zip(keys, row)) for row in rows]
+                session.commit()
+            except Exception as sql_err:
+                session.rollback()
+                execution_results = [{"error": str(sql_err)}]
+            finally:
+                session.close()
+
+        return {
+            "status": "success", 
+            "message": output, 
+            "extracted_sql": extracted_sql,
+            "data": execution_results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI Prompt Execution Failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

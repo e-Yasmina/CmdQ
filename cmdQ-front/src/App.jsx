@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 
 function App() {
   const [prompt, setPrompt] = useState("");
-  const [sqlResult] = useState(null);
+  const [sqlResult, setSqlResult] = useState(null);
   const [dbSchema, setDbSchema] = useState(null);
   const [databasesList, setDatabasesList] = useState([]);
 
@@ -128,26 +128,38 @@ function App() {
         alert("Please enter a CLI command.");
         return;
       }
+      if (!prompt) {
+        alert("Please enter a prompt instruction at the bottom.");
+        return;
+      }
+
+      setSqlResult({ loading: true });
 
       const payload = {
         command: command,
-        db_config: { ...dbConfig, port: parseInt(dbConfig.port) }
+        prompt: prompt,
+        db_config: { ...dbConfig, port: parseInt(dbConfig.port) },
+        schema_json: dbSchema || {}
       };
 
-      const res = await fetch("http://127.0.0.1:8000/ai/launch_cli", {
+      const res = await fetch("http://127.0.0.1:8000/ai/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Launch failed");
-      console.log("Launched CLI successfully:", data.message);
+      if (!res.ok) throw new Error(data.detail || "Execution failed");
+
+      setSqlResult(data);
+      setPrompt("");
+      console.log("Executed seamlessly:", data);
     } catch (err) {
-      console.error("CLI Launch Error:", err.message);
-      alert("Failed to launch CLI: " + err.message);
+      console.error("CLI Execution Error:", err.message);
+      setSqlResult({ error: err.message });
     }
   };
+
 
   const handleSidebarDbChange = (e) => {
     const newDb = e.target.value;
@@ -298,7 +310,7 @@ function App() {
       <main className="flex-1 flex flex-col">
         <div className="h-1/2 border-b border-border flex flex-col relative bg-panel p-4">
           <div className="flex justify-between items-center mb-4">
-            <h1 className="font-bold text-lg text-primary tracking-wide">ANTIGRAVITY ENGINE</h1>
+            <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
             <div className="flex gap-2">
               <select
                 value={selectedCli}
@@ -333,18 +345,21 @@ function App() {
             </div>
           </div>
           <div className="flex-1 flex flex-col">
-            <div className="flex-1 font-code text-sm overflow-y-auto">
-              <div className="text-gray-500 mb-2">System: Antigravity initialized. Waiting for connection...</div>
+            <div className="font-code text-sm overflow-y-auto">
+              <div className="text-gray-500 mb-2">System: CmdQ initialized. Waiting for connection...</div>
               {isConnected && <div className="text-secondary mb-2">&gt; Connected to {dbConfig.database} via {dbConfig.user}@{dbConfig.host}:{dbConfig.port}.</div>}
             </div>
-            <div className="flex items-center mt-2 border-t border-border pt-4">
+            <div className="flex items-center mt-2 border-t border-border pt-2">
               <span className="text-primary font-bold mr-2">&gt;</span>
               <input
                 type="text"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') launchCli();
+                }}
                 disabled={!isConnected}
-                placeholder={isConnected ? "type your command here... (e.g. 'Seed users table with 50 rows')" : "Connect to a database first..."}
+                placeholder={isConnected ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
                 className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
               />
             </div>
@@ -353,9 +368,59 @@ function App() {
 
         <div className="h-1/2 bg-background p-4 flex flex-col overflow-auto">
           <h2 className="text-xs uppercase text-gray-500 font-bold mb-2 tracking-wider">Execution Results</h2>
-          <div className="flex-1 rounded border border-border bg-panel overflow-hidden">
-            {sqlResult ? (
-              <div className="p-4">Results rendering...</div>
+          <div className="flex-1 rounded border border-border bg-panel overflow-y-auto">
+            {sqlResult?.loading ? (
+              <div className="h-full flex items-center justify-center text-primary font-code text-sm animate-pulse">
+                Thinking and executing...
+              </div>
+            ) : sqlResult?.error ? (
+              <div className="p-4 text-red-400 font-code text-sm">{sqlResult.error}</div>
+            ) : sqlResult ? (
+              <div className="p-4 flex flex-col gap-4">
+                {/* AI Text Output */}
+                {sqlResult.message && (
+                  <div className="text-secondary whitespace-pre-wrap font-code text-xs bg-background p-2 rounded border border-border">
+                    {sqlResult.message}
+                  </div>
+                )}
+                {/* SQL Executed */}
+                {sqlResult.extracted_sql && (
+                  <div>
+                    <strong className="text-primary text-xs uppercase">Executed SQL</strong>
+                    <div className="text-gray-300 font-code text-xs bg-black/50 p-2 rounded mt-1 border border-border/50">
+                      {sqlResult.extracted_sql}
+                    </div>
+                  </div>
+                )}
+                {/* Data Rows */}
+                {sqlResult.data && sqlResult.data.length > 0 && (
+                  <div className="overflow-x-auto border border-border rounded mt-2">
+                    <table className="w-full text-left text-xs text-gray-300">
+                      <thead className="bg-background text-gray-400 uppercase">
+                        <tr>
+                          {Object.keys(sqlResult.data[0]).map(k => (
+                            <th key={k} className="p-2 border-b border-r border-border">{k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sqlResult.data.map((row, i) => (
+                          <tr key={i} className="border-b border-border/50 hover:bg-white/5">
+                            {Object.values(row).map((val, idx) => (
+                              <td key={idx} className="p-2 border-r border-border/50 truncate max-w-[200px]">
+                                {String(val)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {sqlResult.data && sqlResult.data.length === 0 && sqlResult.extracted_sql && (
+                  <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
+                )}
+              </div>
             ) : (
               <div className="h-full flex items-center justify-center text-gray-600 font-code text-sm">
                 Waiting for execution...
