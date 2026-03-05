@@ -104,17 +104,23 @@ async def get_schema(details: ConnectionDetails):
         schema_dict = {}
         if details.db_type == "postgres":
             query = """
-                SELECT table_schema, table_name, column_name 
-                FROM information_schema.columns 
-                WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
-                ORDER BY table_schema, table_name, ordinal_position;
+                SELECT c.table_schema, c.table_name, c.column_name 
+                FROM information_schema.columns c
+                JOIN information_schema.tables t 
+                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+                WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
+                  AND t.table_type = 'BASE TABLE'
+                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
             """
         else:
             query = """
-                SELECT table_schema, table_name, column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = DATABASE()
-                ORDER BY table_schema, table_name, ordinal_position;
+                SELECT c.table_schema, c.table_name, c.column_name 
+                FROM information_schema.columns c
+                JOIN information_schema.tables t 
+                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+                WHERE c.table_schema = DATABASE()
+                  AND t.table_type = 'BASE TABLE'
+                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
             """
             
         result = session.execute(text(query)).fetchall()
@@ -211,9 +217,17 @@ async def ai_prompt(payload: AIPrompt):
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
 
+        schema_metadata = []
+        if isinstance(payload.schema_json, dict):
+            for s_name, tables in payload.schema_json.items():
+                if isinstance(tables, dict):
+                    schema_metadata.append(f"Schema '{s_name}' contains exactly {len(tables)} tables.")
+        metadata_str = " ".join(schema_metadata)
+
         augmented_prompt = (
-            f"You are an AI database engineer. Given this {cfg.db_type} database schema: "
-            f"{json.dumps(payload.schema_json)}\n\n"
+            f"You are an AI database engineer. Given this {cfg.db_type} database schema. "
+            f"{metadata_str}\n"
+            f"Schema JSON: {json.dumps(payload.schema_json)}\n\n"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "
             f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block."
