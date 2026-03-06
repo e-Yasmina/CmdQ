@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import ScrollArea from './components/ScrollArea';
+import SchemaAccordion from './components/SchemaAccordion';
 
 function App() {
   const [prompt, setPrompt] = useState("");
@@ -281,34 +283,20 @@ function App() {
             </div>
           )}
         </div>
-        <div className="flex-1 p-4 overflow-y-auto">
+        <ScrollArea className="flex-1 p-4 overflow-y-auto">
           <p className="text-xs uppercase text-gray-400 font-bold mb-2">Schema Explorer</p>
           <ul className="space-y-1 text-sm">
             {!dbSchema && <li className="text-gray-500 text-xs italic">Connect to view schema</li>}
             {dbSchema && Object.entries(dbSchema).map(([schemaName, tables]) => (
-              <div key={schemaName}>
-                <li className="cursor-pointer text-secondary transition-colors flex items-center font-bold">
-                  <span className="mr-2">📁</span> {schemaName}
-                </li>
-                {Object.keys(tables).length > 0 && (
-                  <ul className="ml-4 space-y-1 mt-1 mb-2 border-l border-border pl-2">
-                    {Object.keys(tables).map(tableName => (
-                      <li key={tableName} className="cursor-pointer hover:text-primary transition-colors flex items-center group">
-                        <span className="mr-2 text-gray-500 group-hover:text-primary">📄</span>
-                        <span className="truncate" title={tableName}>{tableName}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
+              <SchemaAccordion key={schemaName} schemaName={schemaName} tables={tables} />
             ))}
           </ul>
-        </div>
+        </ScrollArea>
       </aside>
 
       {/* Main Viewport */}
       <main className="flex-1 flex flex-col">
-        <div className="h-1/2 border-b border-border flex flex-col relative bg-panel p-4">
+        <div className="h-1/3 border-b border-border flex flex-col relative bg-panel p-4">
           <div className="flex justify-between items-center mb-4">
             <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
             <div className="flex gap-2">
@@ -344,11 +332,11 @@ function App() {
               </button>
             </div>
           </div>
-          <div className="flex-1 flex flex-col">
-            <div className="font-code text-sm overflow-y-auto">
+          <div className="flex flex-col">
+            <ScrollArea className="font-code text-sm overflow-y-auto">
               <div className="text-gray-500 mb-2">System: CmdQ initialized. Waiting for connection...</div>
               {isConnected && <div className="text-secondary mb-2">&gt; Connected to {dbConfig.database} via {dbConfig.user}@{dbConfig.host}:{dbConfig.port}.</div>}
-            </div>
+            </ScrollArea>
             <div className="flex items-center mt-2 border-t border-border pt-2">
               <span className="text-primary font-bold mr-2">&gt;</span>
               <input
@@ -366,9 +354,9 @@ function App() {
           </div>
         </div>
 
-        <div className="h-1/2 bg-background p-4 flex flex-col overflow-auto">
+        <ScrollArea className="h-2/3 bg-background p-4 flex flex-col overflow-auto">
           <h2 className="text-xs uppercase text-gray-500 font-bold mb-2 tracking-wider">Execution Results</h2>
-          <div className="flex-1 rounded border border-border bg-panel overflow-y-auto">
+          <ScrollArea className="flex-1 rounded border border-border bg-panel overflow-y-auto">
             {sqlResult?.loading ? (
               <div className="h-full flex items-center justify-center text-primary font-code text-sm animate-pulse">
                 Thinking and executing...
@@ -394,7 +382,7 @@ function App() {
                 )}
                 {/* Data Rows */}
                 {sqlResult.data && sqlResult.data.length > 0 && (
-                  <div className="overflow-x-auto border border-border rounded mt-2">
+                  <ScrollArea className="overflow-x-auto border border-border rounded mt-2">
                     <table className="w-full text-left text-xs text-gray-300">
                       <thead className="bg-background text-gray-400 uppercase">
                         <tr>
@@ -415,7 +403,7 @@ function App() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </ScrollArea>
                 )}
                 {sqlResult.data && sqlResult.data.length === 0 && sqlResult.extracted_sql && (
                   <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
@@ -426,8 +414,8 @@ function App() {
                 Waiting for execution...
               </div>
             )}
-          </div>
-        </div>
+          </ScrollArea>
+        </ScrollArea>
       </main>
 
       <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui">
