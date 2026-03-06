@@ -20,11 +20,16 @@ class ConnectionDetails(BaseModel):
     password: str
     database: str = ""
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 class AIPrompt(BaseModel):
     prompt: str
     command: str
     db_config: ConnectionDetails
     schema_json: Dict[str, Any]
+    chat_history: List[ChatMessage] = []
 
 import socket
 
@@ -224,10 +229,17 @@ async def ai_prompt(payload: AIPrompt):
                     schema_metadata.append(f"Schema '{s_name}' contains exactly {len(tables)} tables.")
         metadata_str = " ".join(schema_metadata)
 
-        augmented_prompt = (
-            f"You are an AI database engineer. Given this {cfg.db_type} database schema. "
+        history_str = ""
+        if payload.chat_history:
+            history_str = "Previous Conversation History:\n" + "\n".join([f"{msg.role}: {msg.content}" for msg in payload.chat_history]) + "\n\n"
+
+        base_prompt = (
+            f"You are an AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
+            f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
+            f"Given this database schema:\n"
             f"{metadata_str}\n"
             f"Schema JSON: {json.dumps(payload.schema_json)}\n\n"
+            f"{history_str}"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "
             f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block."
@@ -240,56 +252,87 @@ async def ai_prompt(payload: AIPrompt):
         # This completely bypasses Windows CMD's 8191 character argument limit.
         import tempfile
         
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-            tf.write(augmented_prompt)
-            temp_file_path = tf.name
-            
-        try:
-            # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
-            # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
-            process = subprocess.run(
-                f'{cmd_to_run} < "{temp_file_path}"', 
-                env=env, capture_output=True, text=True, shell=True
-            )
-            output = process.stdout.strip()
-            error_output = process.stderr.strip()
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-        
-        if not output and error_output:
-            return {"status": "error", "message": f"CLI Error: {error_output}"}
-            
-        if not output:
-             output = "No valid text output returned from CLI."
-             
-        # Extract SQL and execute it
+        MAX_RETRIES = 3
+        current_prompt = base_prompt
+        output = ""
+        error_output = ""
         extracted_sql = None
         execution_results = []
-        sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
         
-        if sql_match:
-            extracted_sql = sql_match.group(1).strip()
-            # Open direct session using the injected credentials
-            session = get_db_connection(
-                db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
-                user=cfg.user, password=cfg.password, dbname=cfg.database
-            )
+        for attempt in range(MAX_RETRIES):
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                tf.write(current_prompt)
+                temp_file_path = tf.name
+                
             try:
-                # Execute the modeled SQL directly on the live DB
-                result_proxy = session.execute(text(extracted_sql))
-                if result_proxy.returns_rows:
-                    rows = result_proxy.fetchall()
-                    # Convert row tuples to generic dicts safely using mapping
-                    keys = result_proxy.keys()
-                    execution_results = [dict(zip(keys, row)) for row in rows]
-                session.commit()
-            except Exception as sql_err:
-                session.rollback()
-                execution_results = [{"error": str(sql_err)}]
+                # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
+                # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
+                process = subprocess.run(
+                    f'{cmd_to_run} < "{temp_file_path}"', 
+                    env=env, capture_output=True, text=True, shell=True
+                )
+                output = process.stdout.strip()
+                error_output = process.stderr.strip()
             finally:
-                session.close()
-
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            
+            if not output and error_output:
+                if attempt == MAX_RETRIES - 1:
+                    return {"status": "error", "message": f"CLI Error: {error_output}"}
+                else:
+                    break
+                
+            if not output:
+                 output = "No valid text output returned from CLI."
+                 
+            # Extract SQL and execute it
+            sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
+            
+            if sql_match:
+                extracted_sql = sql_match.group(1).strip()
+                
+                # Safety check
+                upper_sql = extracted_sql.upper()
+                is_unsafe = any(kw in upper_sql for kw in ["DROP ", "ALTER ", "TRUNCATE "])
+                if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
+                    execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands (DROP, ALTER, TRUNCATE, or DELETE without WHERE) are not allowed to be executed automatically."}]
+                    break
+                    
+                # Open direct session using the injected credentials
+                session = get_db_connection(
+                    db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+                    user=cfg.user, password=cfg.password, dbname=cfg.database
+                )
+                try:
+                    # Execute the modeled SQL directly on the live DB
+                    result_proxy = session.execute(text(extracted_sql))
+                    if result_proxy.returns_rows:
+                        rows = result_proxy.fetchall()
+                        # Convert row tuples to generic dicts safely using mapping
+                        keys = result_proxy.keys()
+                        execution_results = [dict(zip(keys, row)) for row in rows]
+                    session.commit()
+                    session.close()
+                    break # Execution successful, exit loop
+                except Exception as sql_err:
+                    session.rollback()
+                    session.close()
+                    execution_results = [{"error": str(sql_err)}]
+                    
+                    if attempt < MAX_RETRIES - 1:
+                        # Feed the error back to the model
+                        error_feedback = (
+                            f"\n\nThe SQL query you generated:\n```sql\n{extracted_sql}\n```\n"
+                            f"Resulted in this error during execution:\n{str(sql_err)}\n\n"
+                            f"Please correct the query based on this error and output it again wrapped in a ```sql ... ``` block."
+                        )
+                        current_prompt += error_feedback
+                    else:
+                        break # Max retries reached
+            else:
+                break # No SQL to execute, break loop
+                
         return {
             "status": "success", 
             "message": output, 

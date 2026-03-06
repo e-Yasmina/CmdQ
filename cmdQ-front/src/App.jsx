@@ -18,6 +18,7 @@ function App() {
   const [availableClis, setAvailableClis] = useState([]);
   const [selectedCli, setSelectedCli] = useState("");
   const [customCliCommand, setCustomCliCommand] = useState("");
+  const [chatHistory, setChatHistory] = useState([]);
 
   useEffect(() => {
     fetch("http://127.0.0.1:8000/ai/detect_cli")
@@ -70,7 +71,8 @@ function App() {
       if (!res.ok) throw new Error(data.detail || "Port check failed");
       setConnStep(2); // Proceed to credentials
     } catch (err) {
-      setErrorMsg(err.message);
+      console.error("Port check failed:", err.message);
+      setErrorMsg("Connection failed. Check console for details.");
     } finally {
       setIsLoading(false);
     }
@@ -99,8 +101,15 @@ function App() {
         await fetchSchema(initialDb);
       }
       setIsConnected(true);
+      setChatHistory([]);
     } catch (err) {
-      setErrorMsg(err.message);
+      console.error("Database connection error:", err.message);
+      const msg = err.message.toLowerCase();
+      if (msg.includes("password authentication failed") || msg.includes("access denied")) {
+        setErrorMsg("The password is wrong or credentials are incorrect.");
+      } else {
+        setErrorMsg("Connection failed. Check console for details.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -141,7 +150,8 @@ function App() {
         command: command,
         prompt: prompt,
         db_config: { ...dbConfig, port: parseInt(dbConfig.port) },
-        schema_json: dbSchema || {}
+        schema_json: dbSchema || {},
+        chat_history: chatHistory
       };
 
       const res = await fetch("http://127.0.0.1:8000/ai/prompt", {
@@ -154,11 +164,16 @@ function App() {
       if (!res.ok) throw new Error(data.detail || "Execution failed");
 
       setSqlResult(data);
+      setChatHistory(prev => [
+        ...prev,
+        { role: "user", content: prompt },
+        { role: "assistant", content: data.message || "Action completed." }
+      ]);
       setPrompt("");
       console.log("Executed seamlessly:", data);
     } catch (err) {
       console.error("CLI Execution Error:", err.message);
-      setSqlResult({ error: err.message });
+      setSqlResult({ error: "Execution failed. Please check the console for more details." });
     }
   };
 
@@ -167,6 +182,7 @@ function App() {
     const newDb = e.target.value;
     setDbConfig({ ...dbConfig, database: newDb });
     fetchSchema(newDb);
+    setChatHistory([]);
   };
 
   return (
@@ -302,7 +318,7 @@ function App() {
             <div className="flex gap-2">
               <select
                 value={selectedCli}
-                onChange={(e) => setSelectedCli(e.target.value)}
+                onChange={(e) => { setSelectedCli(e.target.value); setChatHistory([]); }}
                 className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary max-w-48"
               >
                 {availableClis.map(cli => (
@@ -328,29 +344,46 @@ function App() {
                 title={isConnected ? "Launch CLI locally" : "Connect to database first"}
                 className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
               >
-                ▶ PLAY
+                ▶
               </button>
+              {chatHistory.length > 0 && (
+                <button
+                  onClick={() => setChatHistory([])}
+                  title="Clear Session Memory"
+                  className="bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                >
+                  Clear Session
+                </button>
+              )}
             </div>
           </div>
           <div className="flex flex-col">
-            <ScrollArea className="font-code text-sm overflow-y-auto">
+            <ScrollArea className="font-code text-sm overflow-y-auto max-h-48 mb-2">
               <div className="text-gray-500 mb-2">System: CmdQ initialized. Waiting for connection...</div>
               {isConnected && <div className="text-secondary mb-2">&gt; Connected to {dbConfig.database} via {dbConfig.user}@{dbConfig.host}:{dbConfig.port}.</div>}
+              {chatHistory.map((msg, i) => (
+                <div key={i} className={`mb-1 ${msg.role === 'user' ? 'text-primary' : 'text-gray-400'}`}>
+                  <span className="opacity-50">{msg.role === 'user' ? '>' : '#'}</span> {msg.role === 'user' ? msg.content : (msg.content.substring(0, 100).replace(/\n/g, " ") + (msg.content.length > 100 ? "..." : ""))}
+                </div>
+              ))}
             </ScrollArea>
-            <div className="flex items-center mt-2 border-t border-border pt-2">
-              <span className="text-primary font-bold mr-2">&gt;</span>
-              <input
-                type="text"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') launchCli();
-                }}
-                disabled={!isConnected}
-                placeholder={isConnected ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
-                className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
-              />
-            </div>
+
+            <ScrollArea className="font-code text-sm overflow-y-auto max-h-48 mb-2">
+              <div className="flex items-center mt-2 border-t border-border pt-2">
+                <span className="text-primary font-bold mr-2">&gt;</span>
+                <input
+                  type="text"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') launchCli();
+                  }}
+                  disabled={!isConnected}
+                  placeholder={isConnected ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
+                  className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
+                />
+              </div>
+            </ScrollArea>
           </div>
         </div>
 
