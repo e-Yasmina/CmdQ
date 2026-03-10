@@ -1,18 +1,28 @@
 import { useState, useEffect } from 'react';
 import ScrollArea from './components/ScrollArea';
 import SchemaAccordion from './components/SchemaAccordion';
+import ConnectionForm from './components/forms/ConnectionForm';
+import ApiRegistrationForm from './components/forms/ApiRegistrationForm';
+import QueryEditor from './components/QueryEditor';
+import DataTable from './components/DataTable';
+import { apiService } from './services/apiService';
 
 function App() {
   const [prompt, setPrompt] = useState("");
   const [sqlResult, setSqlResult] = useState(null);
-  const [dbSchema, setDbSchema] = useState(null);
-  const [databasesList, setDatabasesList] = useState([]);
 
-  // Connection State
-  const [isConnected, setIsConnected] = useState(false);
-  const [connStep, setConnStep] = useState(1);
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState("");
+  // New Connection State
+  const [connections, setConnections] = useState([]); // Array of { id, config, databases, schemas: {} }
+  const [activeConnectionId, setActiveConnectionId] = useState(null);
+  const [activeDatabase, setActiveDatabase] = useState(null);
+  const [activeSchemaName, setActiveSchemaName] = useState(null);
+  const [activeTableName, setActiveTableName] = useState(null);
+  const [showConnectionForm, setShowConnectionForm] = useState(false);
+
+  // Derived state
+  const activeConn = connections.find(c => c.id === activeConnectionId);
+  const activeConfig = activeConn ? { ...activeConn.config, database: activeDatabase } : null;
+  const activeSchema = activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null;
 
   // AI CLI State
   const [availableClis, setAvailableClis] = useState([]);
@@ -20,115 +30,159 @@ function App() {
   const [customCliCommand, setCustomCliCommand] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
 
-  useEffect(() => {
-    fetch("http://127.0.0.1:8000/ai/detect_cli")
-      .then(res => res.json())
+  // API Model Registration State
+  const [showApiModal, setShowApiModal] = useState(false);
+
+  // View Mode: 'ai' | 'query'
+  const [viewMode, setViewMode] = useState('ai');
+  const [isQueryExecuting, setIsQueryExecuting] = useState(false);
+
+  const fetchClis = () => {
+    apiService.fetchClis()
       .then(data => {
         if (data.status === "success" && data.clis) {
           setAvailableClis(data.clis);
           if (data.clis.length > 0) {
-            setSelectedCli(data.clis[0].command);
+            setSelectedCli(prev => {
+              const stillExists = data.clis.some(c => c.command === prev);
+              return stillExists ? prev : data.clis[0].command;
+            });
           }
         }
       })
       .catch(err => console.error("Failed to fetch CLIs:", err));
+  };
+
+  useEffect(() => {
+    fetchClis();
   }, []);
 
-  const [dbConfig, setDbConfig] = useState({
-    db_type: "postgres",
-    host: "127.0.0.1",
-    port: 5432,
-    user: "postgres",
-    password: "",
-    database: ""
-  });
-
-  const databases = [
-    { name: "postgres", label: "PostgreSQL", icon: "🐘", defaultPort: 5432 },
-    { name: "mysql", label: "MySQL", icon: "🐬", defaultPort: 3306 }
-  ];
-
-  const handleDbTypeChange = (e) => {
-    const dbType = e.target.value;
-    const db = databases.find(d => d.name === dbType);
-    setDbConfig({ ...dbConfig, db_type: dbType, port: db ? db.defaultPort : 5432 });
-  };
-
-  const handleConfigChange = (e) => {
-    setDbConfig({ ...dbConfig, [e.target.name]: e.target.value });
-  };
-
-  const checkPort = async () => {
-    setIsLoading(true);
-    setErrorMsg("");
+  const fetchSchema = async (config) => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/check_port", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: dbConfig.host, port: parseInt(dbConfig.port) })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Port check failed");
-      setConnStep(2); // Proceed to credentials
-    } catch (err) {
-      console.error("Port check failed:", err.message);
-      setErrorMsg("Connection failed. Check console for details.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const connectDb = async () => {
-    setIsLoading(true);
-    setErrorMsg("");
-    try {
-      const payload = { ...dbConfig, port: parseInt(dbConfig.port), database: "" };
-      const res = await fetch("http://127.0.0.1:8000/databases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Connection failed");
-
-      const retrievedDbs = data.databases || [];
-      setDatabasesList(retrievedDbs);
-
-      let initialDb = "";
-      if (retrievedDbs.length > 0) {
-        initialDb = retrievedDbs[0];
-        setDbConfig({ ...dbConfig, database: initialDb });
-        await fetchSchema(initialDb);
-      }
-      setIsConnected(true);
-      setChatHistory([]);
-    } catch (err) {
-      console.error("Database connection error:", err.message);
-      const msg = err.message.toLowerCase();
-      if (msg.includes("password authentication failed") || msg.includes("access denied")) {
-        setErrorMsg("The password is wrong or credentials are incorrect.");
-      } else {
-        setErrorMsg("Connection failed. Check console for details.");
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const fetchSchema = async (dbName) => {
-    try {
-      const payload = { ...dbConfig, port: parseInt(dbConfig.port), database: dbName };
-      const schemaRes = await fetch("http://127.0.0.1:8000/schema", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const schemaData = await schemaRes.json();
-      if (schemaRes.ok) {
-        setDbSchema(schemaData.schema);
-      }
+      const data = await apiService.fetchSchema(config);
+      return data.schema;
     } catch (err) {
       console.error("Failed to fetch schema", err);
+      return null;
+    }
+  };
+
+  const handleConnected = async (dbs, initialDb, config) => {
+    const newConnId = `${config.user}@${config.host}:${config.port}`;
+
+    // Check if connection already exists
+    let connExists = connections.find(c => c.id === newConnId);
+
+    if (!connExists) {
+      const initialSchema = await fetchSchema(config); // config already has database: initialDb
+
+      const newConnection = {
+        id: newConnId,
+        config: config,
+        databases: dbs,
+        schemas: {
+          [initialDb]: initialSchema
+        }
+      };
+
+      setConnections(prev => [...prev, newConnection]);
+    }
+
+    setActiveConnectionId(newConnId);
+    setActiveDatabase(initialDb);
+    setActiveSchemaName(null);
+    setActiveTableName(null);
+    setShowConnectionForm(false);
+    setChatHistory([]);
+    setSqlResult(null);
+  };
+
+  const handleDbChange = async (connId, dbName) => {
+    setActiveConnectionId(connId);
+    setActiveDatabase(dbName);
+    setActiveSchemaName(null);
+    setActiveTableName(null);
+
+    const connIndex = connections.findIndex(c => c.id === connId);
+    if (connIndex >= 0) {
+      const conn = connections[connIndex];
+      if (!conn.schemas[dbName]) {
+        // fetch schema for the newly selected DB
+        const configForDb = { ...conn.config, database: dbName };
+        const schema = await fetchSchema(configForDb);
+        setConnections(prev => {
+          const newConns = [...prev];
+          newConns[connIndex] = {
+            ...conn,
+            schemas: {
+              ...conn.schemas,
+              [dbName]: schema
+            }
+          };
+          return newConns;
+        });
+      }
+    }
+
+    setChatHistory([]);
+    setSqlResult(null);
+  };
+
+  const handleTableClick = async (connId, dbName, schemaName, tableName) => {
+    // Make sure we are viewing the right connection
+    if (activeConnectionId !== connId || activeDatabase !== dbName) {
+      await handleDbChange(connId, dbName);
+    }
+
+    const conn = connections.find(c => c.id === connId);
+    if (!conn) return;
+
+    setActiveSchemaName(schemaName);
+    setActiveTableName(tableName);
+
+    const conf = { ...conn.config, database: dbName };
+
+    setViewMode('query');
+    setSqlResult({ loading: true });
+    setIsQueryExecuting(true);
+    try {
+      const data = await apiService.fetchTableData({
+        schema_name: schemaName,
+        table_name: tableName,
+        limit: 100,
+        offset: 0,
+        db_config: conf
+      });
+      setSqlResult({
+        data: data.data,
+        extracted_sql: `SELECT * FROM ${schemaName}.${tableName} LIMIT 100`,
+        message: `Fetched 100 rows from ${tableName}`
+      });
+    } catch (err) {
+      setSqlResult({ error: "Failed to fetch table data: " + err.message });
+    } finally {
+      setIsQueryExecuting(false);
+    }
+  };
+
+  const executeManualQuery = async (queryText) => {
+    if (!activeConfig || !queryText.trim()) return;
+    setSqlResult({ loading: true });
+    setIsQueryExecuting(true);
+    try {
+      const data = await apiService.executeQuery({
+        query: queryText,
+        db_config: activeConfig
+      });
+      setSqlResult({
+        data: data.data,
+        message: data.message,
+        extracted_sql: queryText
+      });
+    } catch (err) {
+      setSqlResult({ error: err.message });
+    } finally {
+      setIsQueryExecuting(false);
     }
   };
 
@@ -149,19 +203,12 @@ function App() {
       const payload = {
         command: command,
         prompt: prompt,
-        db_config: { ...dbConfig, port: parseInt(dbConfig.port) },
-        schema_json: dbSchema || {},
+        db_config: activeConfig,
+        schema_json: activeSchema || {},
         chat_history: chatHistory
       };
 
-      const res = await fetch("http://127.0.0.1:8000/ai/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Execution failed");
+      const data = await apiService.launchAiPrompt(payload);
 
       setSqlResult(data);
       setChatHistory(prev => [
@@ -177,144 +224,168 @@ function App() {
     }
   };
 
-
-  const handleSidebarDbChange = (e) => {
-    const newDb = e.target.value;
-    setDbConfig({ ...dbConfig, database: newDb });
-    fetchSchema(newDb);
-    setChatHistory([]);
+  const handleApiRegistered = (newId) => {
+    setShowApiModal(false);
+    fetchClis();
+    setSelectedCli(newId);
   };
 
+  const launchAiAnalysis = async (type) => {
+    if (!activeConfig) return;
+
+    let promptText = "";
+    let targetType = activeTableName ? "table" : "database";
+    let targetName = activeTableName ? `${activeSchemaName}.${activeTableName}` : activeDatabase;
+
+    switch (type) {
+      case 'security':
+        promptText = `Analyze the security of the ${targetType} '${targetName}'. Focus on constraints, access controls, and potential vulnerabilities.`;
+        break;
+      case 'performance':
+        promptText = `Analyze the performance and storage of the ${targetType} '${targetName}'. Suggest if there is a better, more coherent structure or indexing strategy.`;
+        break;
+      case 'data':
+        promptText = `Perform a general data analysis on the ${targetType} '${targetName}'. Highlight key trends, anomalies, and insights from the data.`;
+        break;
+      case 'summary':
+        promptText = `Provide a comprehensive summary about the ${targetType} '${targetName}', including its purpose, structure, and key characteristics.`;
+        break;
+      default:
+        return;
+    }
+
+    const command = selectedCli === "custom" ? customCliCommand : selectedCli;
+    if (!command) {
+      alert("Please select or enter an AI CLI command first.");
+      return;
+    }
+
+    setViewMode('query'); // Show results in the output area
+    setSqlResult({ loading: true });
+    setIsQueryExecuting(true);
+
+    try {
+      const payload = {
+        command: command,
+        prompt: promptText,
+        db_config: activeConfig,
+        schema_json: activeSchema || {},
+        chat_history: [] // Fresh analysis
+      };
+
+      const data = await apiService.launchAiPrompt(payload);
+      setSqlResult({
+        message: data.message,
+        extracted_sql: data.extracted_sql,
+        data: data.data
+      });
+    } catch (err) {
+      console.error("AI Analysis Error:", err);
+      setSqlResult({ error: "Analysis failed: " + err.message });
+    } finally {
+      setIsQueryExecuting(false);
+    }
+  };
+
+  // Define CSS variables dynamically if needed, or stick to Tailwind classes
   return (
     <div className="h-screen w-screen flex bg-background text-textPrimary font-ui flex-row relative">
 
-      {/* CONNECTION WIZARD OVERLAY */}
-      {!isConnected && (
-        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-panel border border-border rounded-lg shadow-2xl p-6 w-96 flex flex-col gap-4">
-            <h2 className="text-xl font-bold text-primary flex items-center gap-2">
-              <span className="text-2xl">🔌</span> Database Connection
-            </h2>
+      {(connections.length === 0 || showConnectionForm) && (
+        <ConnectionForm
+          onConnected={handleConnected}
+          onCancel={connections.length > 0 ? () => setShowConnectionForm(false) : undefined}
+        />
+      )}
 
-            {errorMsg && (
-              <div className="bg-red-500/10 border border-red-500/50 text-red-400 p-2 rounded text-sm">
-                {errorMsg}
-              </div>
-            )}
-
-            {connStep === 1 && (
-              <>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 uppercase">Database Type</label>
-                  <select
-                    name="db_type"
-                    value={dbConfig.db_type}
-                    onChange={handleDbTypeChange}
-                    className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
-                  >
-                    {databases.map(db => (
-                      <option key={db.name} value={db.name}>{db.icon} {db.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex flex-col gap-1 flex-1">
-                    <label className="text-xs text-gray-400 uppercase">Host</label>
-                    <input
-                      type="text" name="host" value={dbConfig.host} onChange={handleConfigChange}
-                      className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1 w-24">
-                    <label className="text-xs text-gray-400 uppercase">Port</label>
-                    <input
-                      type="number" name="port" value={dbConfig.port} onChange={handleConfigChange}
-                      className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
-                    />
-                  </div>
-                </div>
-                <button
-                  onClick={checkPort}
-                  disabled={isLoading}
-                  className="mt-2 bg-primary text-background font-bold py-2 rounded hover:brightness-110 disabled:opacity-50 transition-all cursor-pointer"
-                >
-                  {isLoading ? "Checking..." : "Verify Port"}
-                </button>
-              </>
-            )}
-
-            {connStep === 2 && (
-              <>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 uppercase">Username</label>
-                  <input
-                    type="text" name="user" value={dbConfig.user} onChange={handleConfigChange}
-                    className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 uppercase">Password</label>
-                  <input
-                    type="password" name="password" value={dbConfig.password} onChange={handleConfigChange}
-                    className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
-                  />
-                </div>
-                <div className="flex gap-2 mt-2">
-                  <button
-                    onClick={() => setConnStep(1)}
-                    className="bg-background border border-border text-textPrimary font-bold py-2 px-4 rounded hover:bg-white/5 transition-all w-1/3 cursor-pointer"
-                  >
-                    Back
-                  </button>
-                  <button
-                    onClick={connectDb}
-                    disabled={isLoading}
-                    className="bg-secondary text-background font-bold py-2 px-4 rounded hover:brightness-110 disabled:opacity-50 transition-all flex-1 cursor-pointer"
-                  >
-                    {isLoading ? "Connecting..." : "Connect"}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+      {showApiModal && (
+        <ApiRegistrationForm onCancel={() => setShowApiModal(false)} onRegistered={handleApiRegistered} />
       )}
 
       {/* Left Sidebar (The Explorer) */}
-      <aside className="w-64 bg-panel border-r border-border flex flex-col">
+      <aside className="w-64 bg-panel border-r border-border flex flex-col flex-shrink-0">
         <div className="p-4 border-b border-border flex flex-col gap-2">
-          {isConnected ? (
-            <select
-              value={dbConfig.database}
-              onChange={handleSidebarDbChange}
-              className="w-full bg-background border border-border rounded p-2 text-sm focus:outline-none focus:border-primary font-bold text-primary"
-            >
-              {databasesList.map(db => (
-                <option key={db} value={db}>💾 {db}</option>
-              ))}
-            </select>
-          ) : (
-            <div className="w-full bg-background border border-border rounded p-2 text-sm text-gray-500 italic opacity-80 text-center">
+          <button
+            onClick={() => setShowConnectionForm(true)}
+            className="w-full bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-background font-bold p-1.5 rounded text-sm transition-all focus:outline-none cursor-pointer"
+          >
+            + Add Server
+          </button>
+        </div>
+        <ScrollArea className="flex-1 p-2 overflow-y-auto">
+          {connections.length === 0 ? (
+            <div className="text-gray-500 text-xs italic opacity-80 text-center mt-4">
               Not Connected
             </div>
+          ) : (
+            connections.map(conn => (
+              <div key={conn.id} className="mb-4">
+                <div className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between">
+                  <span>🖥️ {conn.id}</span>
+                </div>
+                <div className="space-y-0.5 mt-2">
+                  {conn.databases.map(db => {
+                    const isActive = activeConnectionId === conn.id && activeDatabase === db;
+                    return (
+                      <div key={db} className="ml-2">
+                        <div
+                          className={`cursor-pointer px-2 py-1 flex items-center gap-2 rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                          onClick={() => handleDbChange(conn.id, db)}
+                        >
+                          💾 <span className="truncate">{db}</span>
+                        </div>
+                        {isActive && (
+                          <div className="ml-4 mt-2 mb-2">
+                            {conn.schemas[db] ? (
+                              <ul className="space-y-1 text-sm border-l border-border/50 pl-2">
+                                {Object.entries(conn.schemas[db]).map(([schemaName, tables]) => (
+                                  <SchemaAccordion
+                                    key={schemaName}
+                                    schemaName={schemaName}
+                                    tables={tables}
+                                    onTableClick={(s, t) => handleTableClick(conn.id, db, s, t)}
+                                  />
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className="text-gray-500 text-xs italic ml-2">Loading schema...</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
           )}
-        </div>
-        <ScrollArea className="flex-1 p-4 overflow-y-auto">
-          <p className="text-xs uppercase text-gray-400 font-bold mb-2">Schema Explorer</p>
-          <ul className="space-y-1 text-sm">
-            {!dbSchema && <li className="text-gray-500 text-xs italic">Connect to view schema</li>}
-            {dbSchema && Object.entries(dbSchema).map(([schemaName, tables]) => (
-              <SchemaAccordion key={schemaName} schemaName={schemaName} tables={tables} />
-            ))}
-          </ul>
         </ScrollArea>
       </aside>
 
       {/* Main Viewport */}
-      <main className="flex-1 flex flex-col">
-        <div className="h-1/3 border-b border-border flex flex-col relative bg-panel p-4">
-          <div className="flex justify-between items-center mb-4">
+      <main className="flex-1 flex flex-col h-screen overflow-hidden">
+
+        {/* Main Header / View Toggle */}
+        <div className="border-b border-border bg-panel p-4 flex justify-between items-center">
+          <div className="flex items-center gap-4">
             <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
+            <div className="flex bg-background border border-border rounded p-1">
+              <button
+                onClick={() => setViewMode('ai')}
+                className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'ai' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
+              >
+                AI Prompt
+              </button>
+              <button
+                onClick={() => setViewMode('query')}
+                className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'query' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
+              >
+                SQL Editor
+              </button>
+            </div>
+          </div>
+
+          {viewMode === 'ai' && (
             <div className="flex gap-2">
               <select
                 value={selectedCli}
@@ -328,6 +399,14 @@ function App() {
                 ))}
               </select>
 
+              <button
+                onClick={() => setShowApiModal(true)}
+                title="Connect API Model directly"
+                className="bg-panel border border-border hover:bg-white/5 text-textPrimary flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
+              >
+                + API Model
+              </button>
+
               {selectedCli === "custom" && (
                 <input
                   type="text"
@@ -340,8 +419,8 @@ function App() {
 
               <button
                 onClick={launchCli}
-                disabled={!isConnected}
-                title={isConnected ? "Launch CLI locally" : "Connect to database first"}
+                disabled={!activeConfig}
+                title={activeConfig ? "Launch CLI locally" : "Connect to database first"}
                 className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
               >
                 ▶
@@ -352,15 +431,18 @@ function App() {
                   title="Clear Session Memory"
                   className="bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
                 >
-                  Clear Session
+                  Clear
                 </button>
               )}
             </div>
-          </div>
-          <div className="flex flex-col">
-            <ScrollArea className="font-code text-sm overflow-y-auto max-h-48 mb-2">
-              <div className="text-gray-500 mb-2">System: CmdQ initialized. Waiting for connection...</div>
-              {isConnected && <div className="text-secondary mb-2">&gt; Connected to {dbConfig.database} via {dbConfig.user}@{dbConfig.host}:{dbConfig.port}.</div>}
+          )}
+        </div>
+
+        {viewMode === 'ai' && (
+          <div className="h-[30%] border-b border-border flex flex-col bg-panel p-4 flex-shrink-0 min-h-[150px]">
+            <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
+              <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
+              {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
               {chatHistory.map((msg, i) => (
                 <div key={i} className={`mb-1 ${msg.role === 'user' ? 'text-primary' : 'text-gray-400'}`}>
                   <span className="opacity-50">{msg.role === 'user' ? '>' : '#'}</span> {msg.role === 'user' ? msg.content : (msg.content.substring(0, 100).replace(/\n/g, " ") + (msg.content.length > 100 ? "..." : ""))}
@@ -368,90 +450,51 @@ function App() {
               ))}
             </ScrollArea>
 
-            <ScrollArea className="font-code text-sm overflow-y-auto max-h-48 mb-2">
-              <div className="flex items-center mt-2 border-t border-border pt-2">
-                <span className="text-primary font-bold mr-2">&gt;</span>
-                <input
-                  type="text"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') launchCli();
-                  }}
-                  disabled={!isConnected}
-                  placeholder={isConnected ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
-                  className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
-                />
-              </div>
-            </ScrollArea>
+            <div className="flex items-center border-t border-border pt-2 flex-shrink-0">
+              <span className="text-primary font-bold mr-2">&gt;</span>
+              <input
+                type="text"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') launchCli();
+                }}
+                disabled={!activeConfig}
+                placeholder={activeConfig ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
+                className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        <ScrollArea className="h-2/3 bg-background p-4 flex flex-col overflow-auto">
-          <h2 className="text-xs uppercase text-gray-500 font-bold mb-2 tracking-wider">Execution Results</h2>
-          <ScrollArea className="flex-1 rounded border border-border bg-panel overflow-y-auto">
-            {sqlResult?.loading ? (
-              <div className="h-full flex items-center justify-center text-primary font-code text-sm animate-pulse">
-                Thinking and executing...
-              </div>
-            ) : sqlResult?.error ? (
-              <div className="p-4 text-red-400 font-code text-sm">{sqlResult.error}</div>
-            ) : sqlResult ? (
-              <div className="p-4 flex flex-col gap-4">
-                {/* AI Text Output */}
-                {sqlResult.message && (
-                  <div className="text-secondary whitespace-pre-wrap font-code text-xs bg-background p-2 rounded border border-border">
-                    {sqlResult.message}
-                  </div>
-                )}
-                {/* SQL Executed */}
-                {sqlResult.extracted_sql && (
-                  <div>
-                    <strong className="text-primary text-xs uppercase">Executed SQL</strong>
-                    <div className="text-gray-300 font-code text-xs bg-black/50 p-2 rounded mt-1 border border-border/50">
-                      {sqlResult.extracted_sql}
-                    </div>
-                  </div>
-                )}
-                {/* Data Rows */}
-                {sqlResult.data && sqlResult.data.length > 0 && (
-                  <ScrollArea className="overflow-x-auto border border-border rounded mt-2">
-                    <table className="w-full text-left text-xs text-gray-300">
-                      <thead className="bg-background text-gray-400 uppercase">
-                        <tr>
-                          {Object.keys(sqlResult.data[0]).map(k => (
-                            <th key={k} className="p-2 border-b border-r border-border">{k}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sqlResult.data.map((row, i) => (
-                          <tr key={i} className="border-b border-border/50 hover:bg-white/5">
-                            {Object.values(row).map((val, idx) => (
-                              <td key={idx} className="p-2 border-r border-border/50 truncate max-w-[200px]">
-                                {String(val)}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </ScrollArea>
-                )}
-                {sqlResult.data && sqlResult.data.length === 0 && sqlResult.extracted_sql && (
-                  <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
-                )}
-              </div>
-            ) : (
-              <div className="h-full flex items-center justify-center text-gray-600 font-code text-sm">
-                Waiting for execution...
+        {viewMode === 'query' && (
+          <div className="h-[30%] border-b border-border flex flex-col bg-panel flex-shrink-0 min-h-[150px]">
+            <QueryEditor onExecuteQuery={executeManualQuery} isLoading={isQueryExecuting} />
+          </div>
+        )}
+
+        <div className="flex-1 bg-background p-4 flex flex-col min-h-0">
+          <div className="flex justify-between items-center mb-2">
+            <h2 className="text-xs uppercase text-gray-500 font-bold tracking-wider">Execution Results</h2>
+            {activeDatabase && (
+              <div className="flex gap-2">
+                <span className="text-xs text-gray-500 self-center mr-2 uppercase font-bold tracking-wider">
+                  Analyze {activeTableName ? 'Table' : 'Database'}:
+                </span>
+                <button onClick={() => launchAiAnalysis('security')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">🔒 Security</button>
+                <button onClick={() => launchAiAnalysis('performance')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">⚡ Performance</button>
+                <button onClick={() => launchAiAnalysis('data')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📊 Data Analysis</button>
+                <button onClick={() => launchAiAnalysis('summary')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📝 Summary</button>
               </div>
             )}
-          </ScrollArea>
-        </ScrollArea>
+          </div>
+          <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col">
+            <DataTable result={sqlResult} />
+          </div>
+        </div>
       </main>
 
-      <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui">
+      <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui pointer-events-none">
         Press <kbd className="bg-panel border border-border rounded px-1">Ctrl+K</kbd> for Command Palette
       </div>
     </div>

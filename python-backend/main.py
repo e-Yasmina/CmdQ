@@ -20,6 +20,17 @@ class ConnectionDetails(BaseModel):
     password: str
     database: str = ""
 
+class QueryRequest(BaseModel):
+    query: str
+    db_config: ConnectionDetails
+
+class TableDataRequest(BaseModel):
+    table_name: str
+    schema_name: str
+    limit: int = 100
+    offset: int = 0
+    db_config: ConnectionDetails
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -142,7 +153,78 @@ async def get_schema(details: ConnectionDetails):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Schema extraction failed: {str(e)}")
 
+@app.post("/query")
+async def execute_query(req: QueryRequest):
+    """Executes an arbitrary SQL query and returns the results."""
+    try:
+        session = get_db_connection(
+            db_type=req.db_config.db_type,
+            host=req.db_config.host,
+            port=req.db_config.port,
+            user=req.db_config.user,
+            password=req.db_config.password,
+            dbname=req.db_config.database
+        )
+        
+        result_proxy = session.execute(text(req.query))
+        execution_results = []
+        
+        if result_proxy.returns_rows:
+            rows = result_proxy.fetchall()
+            keys = result_proxy.keys()
+            for row in rows:
+                # Stringify values to prevent JSON serialization errors (e.g. UUID, datetime)
+                row_dict = {}
+                for k, v in zip(keys, row):
+                    row_dict[k] = str(v) if v is not None else None
+                execution_results.append(row_dict)
+                
+        session.commit()
+        session.close()
+        
+        return {"status": "success", "data": execution_results, "message": "Query executed successfully."}
+    except Exception as e:
+        return {"status": "error", "message": f"Query Failed: {str(e)}"}
+
+@app.post("/table_data")
+async def get_table_data(req: TableDataRequest):
+    """Fetches paginated data for a specific table."""
+    try:
+        session = get_db_connection(
+            db_type=req.db_config.db_type,
+            host=req.db_config.host,
+            port=req.db_config.port,
+            user=req.db_config.user,
+            password=req.db_config.password,
+            dbname=req.db_config.database
+        )
+        
+        if req.db_config.db_type == "postgres":
+            query = f'SELECT * FROM "{req.schema_name}"."{req.table_name}" LIMIT :limit OFFSET :offset'
+        else:
+            # For MySQL, schema_name is typically the database name, and it doesn't use the same quoting
+            query = f"SELECT * FROM `{req.schema_name}`.`{req.table_name}` LIMIT :limit OFFSET :offset"
+            
+        result_proxy = session.execute(text(query), {"limit": req.limit, "offset": req.offset})
+        execution_results = []
+        
+        if result_proxy.returns_rows:
+            rows = result_proxy.fetchall()
+            keys = result_proxy.keys()
+            for row in rows:
+                row_dict = {}
+                for k, v in zip(keys, row):
+                    row_dict[k] = str(v) if v is not None else None
+                execution_results.append(row_dict)
+                
+        session.close()
+        return {"status": "success", "data": execution_results}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to fetch table data: {str(e)}"}
+
 import shutil
+
+registered_api_models = []
 
 @app.get("/ai/detect_cli")
 async def detect_cli():
@@ -159,14 +241,43 @@ async def detect_cli():
         if shutil.which(cmd):
             available_clis.append({"command": cmd, "name": name, "installed": True})
             
+    # Add newly registered API CLIs
+    for model in registered_api_models:
+        available_clis.append({
+            "command": model["id"],
+            "name": f"{model['name']} (API)",
+            "installed": True,
+            "is_registered": True
+        })
+            
     # Always provide a fallback "custom" option
     available_clis.append({"command": "custom", "name": "Custom CLI Launch Command", "installed": True})
     
     return {"status": "success", "clis": available_clis}
 
+class RegisterAPIModel(BaseModel):
+    id: str
+    name: str
+    provider: str
+    model: str
+    api_key: str
+    base_url: str = ""
+
+@app.post("/ai/register_api_model")
+async def register_api_model(m: RegisterAPIModel):
+    for existing in registered_api_models:
+        if existing["id"] == m.id:
+            existing.update(m.dict())
+            return {"status": "success", "message": "Updated registered API Model."}
+            
+    registered_api_models.append(m.dict())
+    return {"status": "success", "message": "Registered new API Model."}
+
+
 import subprocess
 import os
 import urllib.parse
+import urllib.request
 
 class CLILaunchDetails(BaseModel):
     command: str
@@ -218,7 +329,6 @@ async def ai_prompt(payload: AIPrompt):
             db_url = f"postgresql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
         else:
             db_url = f"mysql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
-            
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
 
@@ -258,24 +368,79 @@ async def ai_prompt(payload: AIPrompt):
         error_output = ""
         extracted_sql = None
         execution_results = []
+        selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
         
         for attempt in range(MAX_RETRIES):
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                tf.write(current_prompt)
-                temp_file_path = tf.name
-                
-            try:
-                # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
-                # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
-                process = subprocess.run(
-                    f'{cmd_to_run} < "{temp_file_path}"', 
-                    env=env, capture_output=True, text=True, shell=True
-                )
-                output = process.stdout.strip()
-                error_output = process.stderr.strip()
-            finally:
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
+            if selected_api_model:
+                try:
+                    provider = selected_api_model["provider"]
+                    api_key = selected_api_model["api_key"]
+                    model_name = selected_api_model["model"]
+                    base_url = selected_api_model.get("base_url") or ""
+                    
+                    if provider in ["openai", "custom_openai"]:
+                        url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
+                        payload_data = {
+                            "model": model_name,
+                            "messages": [{"role": "user", "content": current_prompt}]
+                        }
+                    elif provider == "gemini":
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                        headers = {"Content-Type": "application/json"}
+                        payload_data = {
+                            "contents": [{"parts": [{"text": current_prompt}]}]
+                        }
+                    elif provider == "anthropic":
+                        url = "https://api.anthropic.com/v1/messages"
+                        headers = {
+                            "x-api-key": api_key,
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json"
+                        }
+                        payload_data = {
+                            "model": model_name,
+                            "max_tokens": 4096,
+                            "messages": [{"role": "user", "content": current_prompt}]
+                        }
+                    else:
+                        raise ValueError(f"Unknown provider: {provider}")
+
+                    req = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+                    with urllib.request.urlopen(req) as response:
+                        res_data = json.loads(response.read().decode("utf-8"))
+                        if provider in ["openai", "custom_openai"]:
+                            output = res_data["choices"][0]["message"]["content"]
+                        elif provider == "gemini":
+                            output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                        elif provider == "anthropic":
+                            output = res_data["content"][0]["text"]
+                        error_output = ""
+                except Exception as api_err:
+                    error_output = str(api_err)
+                    if hasattr(api_err, "read"):
+                        error_output += f" - {api_err.read().decode('utf-8')}"
+                    output = ""
+            else:
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                    tf.write(current_prompt)
+                    temp_file_path = tf.name
+                    
+                try:
+                    # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
+                    # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
+                    process = subprocess.run(
+                        f'{cmd_to_run} < "{temp_file_path}"', 
+                        env=env, capture_output=True, text=True, shell=True
+                    )
+                    output = process.stdout.strip()
+                    error_output = process.stderr.strip()
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
             
             if not output and error_output:
                 if attempt == MAX_RETRIES - 1:

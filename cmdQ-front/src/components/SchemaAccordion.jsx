@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const SchemaAccordion = ({ schemaName, tables }) => {
+const SchemaAccordion = ({ schemaName, tables, onTableClick }) => {
     const [isOpen, setIsOpen] = useState(false);
     const tableNames = Object.keys(tables);
 
@@ -23,7 +23,10 @@ const SchemaAccordion = ({ schemaName, tables }) => {
             {isOpen && tableNames.length > 0 && (
                 <ul className="ml-4 space-y-1 mt-1 mb-2 border-l border-border pl-2">
                     {tableNames.map(tableName => (
-                        <li key={tableName} className="cursor-pointer hover:text-primary transition-colors flex items-center group text-textPrimary py-0.5">
+                        <li key={tableName}
+                            onClick={() => onTableClick && onTableClick(schemaName, tableName)}
+                            className="cursor-pointer hover:text-primary transition-colors flex items-center group text-textPrimary py-0.5"
+                        >
                             <span className="mr-2 text-gray-500 group-hover:text-primary text-xs opacity-70">📄</span>
                             <span className="truncate text-xs" title={tableName}>{tableName}</span>
                         </li>
