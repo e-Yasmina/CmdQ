@@ -83,5 +83,49 @@ export const apiService = {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch table data");
         return data;
+    },
+
+    fetchSecurityAnalysis: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/analyze/security`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch security analysis");
+        return data;
+    },
+
+    fetchPerformanceAnalysis: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/analyze/performance`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch performance analysis");
+        return data;
+    },
+
+    fetchDataAnalysis: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/analyze/data`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch data analysis");
+        return data;
+    },
+
+    fetchSummaryAnalysis: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/analyze/summary`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch summary analysis");
+        return data;
     }
 };

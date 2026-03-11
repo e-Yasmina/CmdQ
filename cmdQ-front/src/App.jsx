@@ -5,6 +5,10 @@ import ConnectionForm from './components/forms/ConnectionForm';
 import ApiRegistrationForm from './components/forms/ApiRegistrationForm';
 import QueryEditor from './components/QueryEditor';
 import DataTable from './components/DataTable';
+import SecurityAnalysisViewer from './components/SecurityAnalysisViewer';
+import PerformanceAnalysisViewer from './components/PerformanceAnalysisViewer';
+import DataAnalysisViewer from './components/DataAnalysisViewer';
+import SummaryAnalysisViewer from './components/SummaryAnalysisViewer';
 import { apiService } from './services/apiService';
 
 function App() {
@@ -233,29 +237,14 @@ function App() {
   const launchAiAnalysis = async (type) => {
     if (!activeConfig) return;
 
-    let promptText = "";
     let targetType = activeTableName ? "table" : "database";
     let targetName = activeTableName ? `${activeSchemaName}.${activeTableName}` : activeDatabase;
 
-    switch (type) {
-      case 'security':
-        promptText = `Analyze the security of the ${targetType} '${targetName}'. Focus on constraints, access controls, and potential vulnerabilities.`;
-        break;
-      case 'performance':
-        promptText = `Analyze the performance and storage of the ${targetType} '${targetName}'. Suggest if there is a better, more coherent structure or indexing strategy.`;
-        break;
-      case 'data':
-        promptText = `Perform a general data analysis on the ${targetType} '${targetName}'. Highlight key trends, anomalies, and insights from the data.`;
-        break;
-      case 'summary':
-        promptText = `Provide a comprehensive summary about the ${targetType} '${targetName}', including its purpose, structure, and key characteristics.`;
-        break;
-      default:
-        return;
-    }
-
     const command = selectedCli === "custom" ? customCliCommand : selectedCli;
-    if (!command) {
+
+    // We allow specialized analysis even without command (only data/charts), 
+    // but the other analyses still need prompt for now.
+    if (!command && (type !== 'security' && type !== 'performance' && type !== 'data' && type !== 'summary')) {
       alert("Please select or enter an AI CLI command first.");
       return;
     }
@@ -264,27 +253,97 @@ function App() {
     setSqlResult({ loading: true });
     setIsQueryExecuting(true);
 
-    try {
-      const payload = {
-        command: command,
-        prompt: promptText,
-        db_config: activeConfig,
-        schema_json: activeSchema || {},
-        chat_history: [] // Fresh analysis
-      };
-
-      const data = await apiService.launchAiPrompt(payload);
-      setSqlResult({
-        message: data.message,
-        extracted_sql: data.extracted_sql,
-        data: data.data
-      });
-    } catch (err) {
-      console.error("AI Analysis Error:", err);
-      setSqlResult({ error: "Analysis failed: " + err.message });
-    } finally {
-      setIsQueryExecuting(false);
+    if (type === 'security') {
+      try {
+        const payload = {
+          command: command || "",
+          db_config: activeConfig,
+          schema_name: activeSchemaName || "",
+          table_name: activeTableName || ""
+        };
+        const data = await apiService.fetchSecurityAnalysis(payload);
+        setSqlResult({
+          type: 'security_analysis',
+          ...data
+        });
+      } catch (err) {
+        console.error("Security Analysis Error:", err);
+        setSqlResult({ error: "Analysis failed: " + err.message });
+      } finally {
+        setIsQueryExecuting(false);
+      }
+      return;
     }
+
+    if (type === 'performance') {
+      try {
+        const payload = {
+          command: command || "",
+          db_config: activeConfig,
+          schema_name: activeSchemaName || "",
+          table_name: activeTableName || ""
+        };
+        const data = await apiService.fetchPerformanceAnalysis(payload);
+        setSqlResult({
+          type: 'performance_analysis',
+          ...data
+        });
+      } catch (err) {
+        console.error("Performance Analysis Error:", err);
+        setSqlResult({ error: "Analysis failed: " + err.message });
+      } finally {
+        setIsQueryExecuting(false);
+      }
+      return;
+    }
+
+    if (type === 'data') {
+      try {
+        const payload = {
+          command: command || "",
+          db_config: activeConfig,
+          schema_name: activeSchemaName || "",
+          table_name: activeTableName || ""
+        };
+        const data = await apiService.fetchDataAnalysis(payload);
+        setSqlResult({
+          type: 'data_analysis',
+          ...data
+        });
+      } catch (err) {
+        console.error("Data Analysis Error:", err);
+        setSqlResult({ error: "Analysis failed: " + err.message });
+      } finally {
+        setIsQueryExecuting(false);
+      }
+      return;
+    }
+
+    if (type === 'summary') {
+      try {
+        const payload = {
+          command: command || "",
+          db_config: activeConfig,
+          schema_name: activeSchemaName || "",
+          table_name: activeTableName || ""
+        };
+        const data = await apiService.fetchSummaryAnalysis(payload);
+        setSqlResult({
+          type: 'summary_analysis',
+          ...data
+        });
+      } catch (err) {
+        console.error("Summary Analysis Error:", err);
+        setSqlResult({ error: "Analysis failed: " + err.message });
+      } finally {
+        setIsQueryExecuting(false);
+      }
+      return;
+    }
+
+    setIsQueryExecuting(false);
+    setSqlResult({ error: "Unknown analysis type" });
+    return;
   };
 
   // Define CSS variables dynamically if needed, or stick to Tailwind classes
@@ -489,7 +548,17 @@ function App() {
             )}
           </div>
           <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col">
-            <DataTable result={sqlResult} />
+            {sqlResult?.type === 'security_analysis' ? (
+              <SecurityAnalysisViewer result={sqlResult} />
+            ) : sqlResult?.type === 'performance_analysis' ? (
+              <PerformanceAnalysisViewer result={sqlResult} />
+            ) : sqlResult?.type === 'data_analysis' ? (
+              <DataAnalysisViewer result={sqlResult} />
+            ) : sqlResult?.type === 'summary_analysis' ? (
+              <SummaryAnalysisViewer result={sqlResult} />
+            ) : (
+              <DataTable result={sqlResult} />
+            )}
           </div>
         </div>
       </main>

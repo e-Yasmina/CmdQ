@@ -42,6 +42,30 @@ class AIPrompt(BaseModel):
     schema_json: Dict[str, Any]
     chat_history: List[ChatMessage] = []
 
+class SecurityAnalysisRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str = ""
+    table_name: str = ""
+    command: str = ""
+
+class PerformanceAnalysisRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str = ""
+    table_name: str = ""
+    command: str = ""
+
+class DataAnalysisRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str = ""
+    table_name: str = ""
+    command: str = ""
+
+class SummaryAnalysisRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str = ""
+    table_name: str = ""
+    command: str = ""
+
 import socket
 
 class PortCheckDetails(BaseModel):
@@ -315,6 +339,633 @@ async def launch_cli(details: CLILaunchDetails):
 
 import json
 import re
+
+@app.post("/analyze/security")
+async def analyze_security(req: SecurityAnalysisRequest):
+    cfg = req.db_config
+    session = get_db_connection(
+        db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+        user=cfg.user, password=cfg.password, dbname=cfg.database
+    )
+    
+    metrics = {
+        "level": "table" if req.table_name else "database",
+        "target": req.table_name or cfg.database,
+    }
+    
+    try:
+        if req.table_name:
+            if cfg.db_type == "postgres":
+                grants_q = "SELECT grantee, privilege_type FROM information_schema.role_table_grants WHERE table_name = :table_name;"
+                grants_res = session.execute(text(grants_q), {"table_name": req.table_name}).fetchall()
+                metrics["permissions"] = [{"grantee": r[0], "privilege": r[1]} for r in grants_res]
+                
+                cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :table_name;"
+                cols_res = session.execute(text(cols_q), {"table_name": req.table_name}).fetchall()
+                sensitive_keywords = ['pass', 'token', 'secret', 'email', 'ssn', 'key', 'card', 'phone']
+                sensitive_cols = []
+                for r in cols_res:
+                    col = str(r[0]).lower()
+                    if any(kw in col for kw in sensitive_keywords):
+                        sensitive_cols.append({"column": r[0], "type": r[1]})
+                metrics["sensitive_columns"] = sensitive_cols
+                metrics["total_columns"] = len(cols_res)
+                
+                constr_q = "SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :table_name;"
+                constr_res = session.execute(text(constr_q), {"table_name": req.table_name}).fetchall()
+                metrics["constraints"] = [{"name": r[0], "type": r[1]} for r in constr_res]
+                
+            else: # MySQL
+                cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :table_name AND table_schema = DATABASE();"
+                cols_res = session.execute(text(cols_q), {"table_name": req.table_name}).fetchall()
+                sensitive_keywords = ['pass', 'token', 'secret', 'email', 'ssn', 'key', 'card', 'phone']
+                sensitive_cols = []
+                for r in cols_res:
+                    col = str(r[0]).lower()
+                    if any(kw in col for kw in sensitive_keywords):
+                        sensitive_cols.append({"column": r[0], "type": r[1]})
+                metrics["sensitive_columns"] = sensitive_cols
+                metrics["total_columns"] = len(cols_res)
+                
+                constr_q = "SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :table_name AND table_schema = DATABASE();"
+                constr_res = session.execute(text(constr_q), {"table_name": req.table_name}).fetchall()
+                metrics["constraints"] = [{"name": r[0], "type": r[1]} for r in constr_res]
+                metrics["permissions"] = []
+                
+        else:
+            if cfg.db_type == "postgres":
+                roles_q = "SELECT rolname, rolsuper FROM pg_roles;"
+                try:
+                    roles_res = session.execute(text(roles_q)).fetchall()
+                    metrics["admins"] = [str(r[0]) for r in roles_res if r[1] is True]
+                    metrics["total_users"] = len(roles_res)
+                except Exception as e:
+                    metrics["permissions_error"] = str(e)
+            else:
+                roles_q = "SELECT user, Super_priv FROM mysql.user;"
+                try:
+                    roles_res = session.execute(text(roles_q)).fetchall()
+                    metrics["admins"] = [str(r[0]) for r in roles_res if r[1] == 'Y']
+                    metrics["total_users"] = len(roles_res)
+                except Exception as e:
+                    metrics["permissions_error"] = str(e)
+        
+        session.close()
+    except Exception as e:
+        session.close()
+        return {"status": "error", "message": str(e)}
+
+    ai_summary = ""
+    # Only invoke AI if command is provided
+    if req.command:
+        raw_json_metrics = json.dumps(metrics)
+        prompt_str = f"Analyze the following security metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Provide a brief, concise security risk assessment and simple recommendations if any. Use plain text or light markdown. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user."
+        
+        try:
+            cmd_to_run = req.command
+            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            output = ""
+            
+            if selected_api_model:
+                provider = selected_api_model["provider"]
+                api_key = selected_api_model["api_key"]
+                model_name = selected_api_model["model"]
+                base_url = selected_api_model.get("base_url") or ""
+                
+                if provider in ["openai", "custom_openai"]:
+                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
+                elif provider == "gemini":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                    headers = {"Content-Type": "application/json"}
+                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
+                elif provider == "anthropic":
+                    url = "https://api.anthropic.com/v1/messages"
+                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
+                
+                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+                with urllib.request.urlopen(req_obj) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    if provider in ["openai", "custom_openai"]:
+                        output = res_data["choices"][0]["message"]["content"]
+                    elif provider == "gemini":
+                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                    elif provider == "anthropic":
+                        output = res_data["content"][0]["text"]
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                    tf.write(prompt_str)
+                    temp_file_path = tf.name
+                try:
+                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
+                    output = proc.stdout.strip()
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                        
+            ai_summary = output
+        except Exception as e:
+            ai_summary = f"Failed to generate AI analysis: {str(e)}"
+            
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+
+@app.post("/analyze/performance")
+async def analyze_performance(req: PerformanceAnalysisRequest):
+    cfg = req.db_config
+    session = get_db_connection(
+        db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+        user=cfg.user, password=cfg.password, dbname=cfg.database
+    )
+    
+    metrics = {
+        "level": "table" if req.table_name else "database",
+        "target": req.table_name or cfg.database,
+    }
+    
+    try:
+        if req.table_name:
+            if cfg.db_type == "postgres":
+                schema_name = req.schema_name or "public"
+                
+                # Table Size & Row Count
+                size_q = "SELECT pg_total_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as total_size, pg_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as table_size;"
+                try:
+                    size_res = session.execute(text(size_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                    metrics["total_size_bytes"] = size_res[0] if size_res else 0
+                    metrics["table_size_bytes"] = size_res[1] if size_res else 0
+                    metrics["index_size_bytes"] = metrics["total_size_bytes"] - metrics["table_size_bytes"]
+                except Exception as e:
+                    metrics["size_error"] = str(e)
+
+                # Scan Metrics (Seq vs Index)  
+                scan_q = "SELECT seq_scan, seq_tup_read, idx_scan, idx_tup_fetch FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
+                try:
+                    scan_res = session.execute(text(scan_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                    if scan_res:
+                        metrics["seq_scans"] = scan_res[0]
+                        metrics["idx_scans"] = scan_res[2]
+                        total_scans = (scan_res[0] or 0) + (scan_res[2] or 0)
+                        metrics["idx_scan_ratio"] = (scan_res[2] / total_scans) if total_scans > 0 else 0
+                    else:
+                        metrics["seq_scans"] = 0
+                        metrics["idx_scans"] = 0
+                        metrics["idx_scan_ratio"] = 0
+                except Exception as e: pass
+
+                # Row Activity
+                act_q = "SELECT n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
+                try:
+                    act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                    if act_res:
+                        metrics["inserts"] = act_res[0]
+                        metrics["updates"] = act_res[1]
+                        metrics["deletes"] = act_res[2]
+                        metrics["live_rows"] = act_res[3]
+                        metrics["dead_rows"] = act_res[4]
+                        metrics["bloat_ratio"] = (act_res[4] / (act_res[3] + act_res[4])) if (act_res[3] + act_res[4]) > 0 else 0
+                except Exception as e: pass
+
+            else: # MySQL
+                # Table Size & Row Count
+                size_q = "SELECT data_length, index_length, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
+                try:
+                    size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
+                    if size_res:
+                        metrics["table_size_bytes"] = size_res[0]
+                        metrics["index_size_bytes"] = size_res[1]
+                        metrics["total_size_bytes"] = size_res[0] + size_res[1]
+                        metrics["live_rows"] = size_res[2]
+                except Exception as e: pass
+
+        else: # Database Level
+            if cfg.db_type == "postgres":
+                # Cache Hit Ratio
+                db_stat_q = "SELECT blks_hit, blks_read, xact_commit, xact_rollback, conflicts, deadlocks FROM pg_stat_database WHERE datname = :d;"
+                try:
+                    db_stat_res = session.execute(text(db_stat_q), {"d": cfg.database}).fetchone()
+                    if db_stat_res:
+                        hits = db_stat_res[0] or 0
+                        reads = db_stat_res[1] or 0
+                        metrics["cache_hits"] = hits
+                        metrics["disk_reads"] = reads
+                        metrics["cache_hit_ratio"] = hits / (hits + reads) if (hits + reads) > 0 else 0
+                        metrics["commits"] = db_stat_res[2]
+                        metrics["rollbacks"] = db_stat_res[3]
+                        metrics["conflicts"] = db_stat_res[4]
+                        metrics["deadlocks"] = db_stat_res[5]
+                except Exception as e: metrics["stat_error"] = str(e)
+                
+                # Active Connections
+                conn_q = "SELECT count(*) as active, sum(case when state = 'active' then 1 else 0 end) as executing FROM pg_stat_activity WHERE datname = :d;"
+                try:
+                    conn_res = session.execute(text(conn_q), {"d": cfg.database}).fetchone()
+                    if conn_res:
+                        metrics["total_connections"] = conn_res[0]
+                        metrics["active_queries"] = conn_res[1] or 0
+                except Exception as e: pass
+                
+                # Max Connections
+                try:
+                    max_conn_res = session.execute(text("SHOW max_connections;")).fetchone()
+                    metrics["max_connections"] = int(max_conn_res[0]) if max_conn_res else 100
+                except Exception as e: pass
+
+            else: # MySQL
+                try:
+                    # Connections
+                    threads_res = session.execute(text("SHOW GLOBAL STATUS LIKE 'Threads_connected';")).fetchone()
+                    metrics["total_connections"] = int(threads_res[1]) if threads_res else 0
+                    
+                    running_res = session.execute(text("SHOW GLOBAL STATUS LIKE 'Threads_running';")).fetchone()
+                    metrics["active_queries"] = int(running_res[1]) if running_res else 0
+
+                    max_conn_res = session.execute(text("SHOW VARIABLES LIKE 'max_connections';")).fetchone()
+                    metrics["max_connections"] = int(max_conn_res[1]) if max_conn_res else 151
+                    
+                    # Approximating Cache for InnoDB
+                    innodb_reads = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_reads';")).fetchone()
+                    innodb_reqs = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_read_requests';")).fetchone()
+                    if innodb_reads and innodb_reqs:
+                        reads = int(innodb_reads[1])
+                        reqs = int(innodb_reqs[1])
+                        hits = reqs - reads
+                        metrics["cache_hits"] = hits
+                        metrics["disk_reads"] = reads
+                        metrics["cache_hit_ratio"] = hits / reqs if reqs > 0 else 0
+                except Exception as e: pass
+        
+        session.close()
+    except Exception as e:
+        session.close()
+        return {"status": "error", "message": str(e)}
+
+    ai_summary = ""
+    if req.command:
+        raw_json_metrics = json.dumps(metrics)
+        prompt_str = f"Analyze these performance metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify bottlenecks based on cache hit ratio, index usage, active connections, or lock conflicts. Provide a brief actionable performance tuning assessment. Don't mention specific commands, just the tuning concept. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user."
+        
+        try:
+            cmd_to_run = req.command
+            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            output = ""
+            
+            if selected_api_model:
+                provider = selected_api_model["provider"]
+                api_key = selected_api_model["api_key"]
+                model_name = selected_api_model["model"]
+                base_url = selected_api_model.get("base_url") or ""
+                
+                if provider in ["openai", "custom_openai"]:
+                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
+                elif provider == "gemini":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                    headers = {"Content-Type": "application/json"}
+                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
+                elif provider == "anthropic":
+                    url = "https://api.anthropic.com/v1/messages"
+                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
+                
+                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+                with urllib.request.urlopen(req_obj) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    if provider in ["openai", "custom_openai"]:
+                        output = res_data["choices"][0]["message"]["content"]
+                    elif provider == "gemini":
+                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                    elif provider == "anthropic":
+                        output = res_data["content"][0]["text"]
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                    tf.write(prompt_str)
+                    temp_file_path = tf.name
+                try:
+                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
+                    output = proc.stdout.strip()
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                        
+            ai_summary = output
+        except Exception as e:
+            ai_summary = f"Failed to generate AI performance insight: {str(e)}"
+            
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+
+@app.post("/analyze/data")
+async def analyze_data(req: DataAnalysisRequest):
+    cfg = req.db_config
+    session = get_db_connection(
+        db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+        user=cfg.user, password=cfg.password, dbname=cfg.database
+    )
+    
+    metrics = {
+        "level": "table" if req.table_name else "database",
+        "target": req.table_name or cfg.database,
+    }
+    
+    try:
+        if req.table_name:
+            if cfg.db_type == "postgres":
+                schema_name = req.schema_name or "public"
+                
+                # Column check
+                cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"
+                cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
+                metrics["total_columns"] = len(cols_res)
+                
+                # Approximate rows
+                act_q = "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
+                act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                total_rows = act_res[0] if act_res and act_res[0] is not None else 0
+                metrics["total_rows"] = total_rows
+                
+                # Sample the first 10 columns for completeness (null check) and uniqueness
+                sampled_columns = cols_res[:10]
+                completeness = {}
+                
+                if total_rows > 0:
+                    for col, dtype in sampled_columns:
+                        try:
+                            # Safely count non-nulls and distincts for sampling
+                            c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema_name}"."{req.table_name}"'
+                            c_res = session.execute(text(c_q)).fetchone()
+                            if c_res:
+                                non_nulls = c_res[0]
+                                unique_vals = c_res[1]
+                                completeness[col] = {
+                                    "fill_rate": non_nulls / total_rows,
+                                    "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
+                                    "type": dtype
+                                }
+                        except Exception:
+                            pass
+                metrics["column_stats"] = completeness
+                
+            else: # MySQL
+                # Approx rows
+                size_q = "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
+                size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
+                total_rows = size_res[0] if size_res and size_res[0] is not None else 0
+                metrics["total_rows"] = total_rows
+
+                cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE();"
+                cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
+                metrics["total_columns"] = len(cols_res)
+                
+                sampled_columns = cols_res[:10]
+                completeness = {}
+                
+                if total_rows > 0:
+                    for col, dtype in sampled_columns:
+                        try:
+                            c_q = f"SELECT count(`{col}`) as non_nulls, count(distinct `{col}`) as unique_vals FROM `{req.table_name}`"
+                            c_res = session.execute(text(c_q)).fetchone()
+                            if c_res:
+                                non_nulls = c_res[0]
+                                unique_vals = c_res[1]
+                                completeness[col] = {
+                                    "fill_rate": non_nulls / total_rows,
+                                    "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
+                                    "type": dtype
+                                }
+                        except Exception:
+                            pass
+                metrics["column_stats"] = completeness
+
+        else: # Database Level
+            if cfg.db_type == "postgres":
+                # Find largest tables by row count
+                q = "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC LIMIT 10;"
+                res = session.execute(text(q)).fetchall()
+                metrics["largest_tables"] = [{"name": str(r[0]), "rows": int(r[1] or 0)} for r in res]
+                metrics["total_db_rows"] = sum(int(r[1] or 0) for r in res)
+                
+                q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"
+                t_res = session.execute(text(q_tables)).fetchone()
+                metrics["total_tables"] = t_res[0] if t_res else 0
+            else: # MySQL
+                q = "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_rows DESC LIMIT 10;"
+                res = session.execute(text(q)).fetchall()
+                metrics["largest_tables"] = [{"name": str(r[0]), "rows": int(r[1] or 0)} for r in res]
+                metrics["total_db_rows"] = sum(int(r[1] or 0) for r in res)
+                
+                q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema = DATABASE();"
+                t_res = session.execute(text(q_tables)).fetchone()
+                metrics["total_tables"] = t_res[0] if t_res else 0
+                
+        session.close()
+    except Exception as e:
+        session.close()
+        return {"status": "error", "message": str(e)}
+
+    ai_summary = ""
+    if req.command:
+        raw_json_metrics = json.dumps(metrics)
+        prompt_str = f"Analyze these data quality and volume metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify any notable data skew, missing values, fill rates, unique ratios, or table sizing insights. Provide a concise data assessment emphasizing structural characteristics or potential data quality red flags. Do not mention any of the files, backend code, or python files you might have read in your response. Just provide the insights directly to the user."
+        
+        try:
+            cmd_to_run = req.command
+            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            output = ""
+            
+            if selected_api_model:
+                provider = selected_api_model["provider"]
+                api_key = selected_api_model["api_key"]
+                model_name = selected_api_model["model"]
+                base_url = selected_api_model.get("base_url") or ""
+                
+                if provider in ["openai", "custom_openai"]:
+                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
+                elif provider == "gemini":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                    headers = {"Content-Type": "application/json"}
+                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
+                elif provider == "anthropic":
+                    url = "https://api.anthropic.com/v1/messages"
+                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
+                
+                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+                with urllib.request.urlopen(req_obj) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    if provider in ["openai", "custom_openai"]:
+                        output = res_data["choices"][0]["message"]["content"]
+                    elif provider == "gemini":
+                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                    elif provider == "anthropic":
+                        output = res_data["content"][0]["text"]
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                    tf.write(prompt_str)
+                    temp_file_path = tf.name
+                try:
+                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
+                    output = proc.stdout.strip()
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                        
+            ai_summary = output
+        except Exception as e:
+            ai_summary = f"Failed to generate AI output: {str(e)}"
+            
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+
+@app.post("/analyze/summary")
+async def analyze_summary(req: SummaryAnalysisRequest):
+    cfg = req.db_config
+    session = get_db_connection(
+        db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+        user=cfg.user, password=cfg.password, dbname=cfg.database
+    )
+    
+    metrics = {
+        "level": "table" if req.table_name else "database",
+        "target": req.table_name or cfg.database,
+    }
+    
+    try:
+        if req.table_name:
+            if cfg.db_type == "postgres":
+                schema_name = req.schema_name or "public"
+                
+                # Table Size & Rows
+                size_q = "SELECT pg_total_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as total_size, pg_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as table_size;"
+                try:
+                    size_res = session.execute(text(size_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                    metrics["total_size_bytes"] = size_res[0] if size_res else 0
+                except Exception: metrics["total_size_bytes"] = 0
+                
+                act_q = "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
+                try:
+                    act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                    metrics["approx_rows"] = act_res[0] if act_res and act_res[0] is not None else 0
+                except Exception: metrics["approx_rows"] = 0
+                
+                # Columns structure & primary keys
+                cols_q = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = :t AND table_schema = :s;"
+                cols_res = session.execute(text(cols_q), {"t": req.table_name, "s": schema_name}).fetchall()
+                metrics["columns"] = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "default": r[3]} for r in cols_res]
+                
+                pk_q = '''
+                SELECT a.attname
+                FROM   pg_index i
+                JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE  i.indrelid = (quote_ident(:s) || '.' || quote_ident(:t))::regclass
+                AND    i.indisprimary;
+                '''
+                try:
+                    pk_res = session.execute(text(pk_q), {"s": schema_name, "t": req.table_name}).fetchall()
+                    metrics["primary_keys"] = [str(r[0]) for r in pk_res]
+                except Exception: metrics["primary_keys"] = []
+                
+            else: # MySQL
+                # Approx rows and size
+                size_q = "SELECT table_rows, data_length, index_length FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
+                size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
+                metrics["approx_rows"] = size_res[0] if size_res and size_res[0] is not None else 0
+                metrics["total_size_bytes"] = (size_res[1] or 0) + (size_res[2] or 0) if size_res else 0
+
+                cols_q = "SELECT column_name, data_type, is_nullable, column_default, column_key FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE();"
+                cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
+                metrics["columns"] = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "default": r[3]} for r in cols_res]
+                metrics["primary_keys"] = [str(r[0]) for r in cols_res if r[4] == 'PRI']
+
+        else: # Database Level
+            if cfg.db_type == "postgres":
+                try:
+                    db_size_q = "SELECT pg_database_size(:d);"
+                    db_size_res = session.execute(text(db_size_q), {"d": cfg.database}).fetchone()
+                    metrics["database_size_bytes"] = db_size_res[0] if db_size_res else 0
+                except Exception: metrics["database_size_bytes"] = 0
+                
+                q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"
+                t_res = session.execute(text(q_tables)).fetchone()
+                metrics["total_tables"] = t_res[0] if t_res else 0
+                
+            else: # MySQL
+                q_size = "SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = DATABASE();"
+                db_size_res = session.execute(text(q_size)).fetchone()
+                metrics["database_size_bytes"] = db_size_res[0] if db_size_res and db_size_res[0] is not None else 0
+                
+                q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema = DATABASE();"
+                t_res = session.execute(text(q_tables)).fetchone()
+                metrics["total_tables"] = t_res[0] if t_res else 0
+
+        # General info available to both levels
+        metrics["db_engine"] = cfg.db_type
+        
+        session.close()
+    except Exception as e:
+        session.close()
+        return {"status": "error", "message": str(e)}
+
+    ai_summary = ""
+    if req.command:
+        raw_json_metrics = json.dumps(metrics)
+        prompt_str = f"Provide a comprehensive summary about the {metrics['level']} '{metrics['target']}', based on these metrics: {raw_json_metrics}. Briefly describe its structure, schema complexity, or overall footprint. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the summary directly to the user."
+        
+        try:
+            cmd_to_run = req.command
+            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            output = ""
+            
+            if selected_api_model:
+                provider = selected_api_model["provider"]
+                api_key = selected_api_model["api_key"]
+                model_name = selected_api_model["model"]
+                base_url = selected_api_model.get("base_url") or ""
+                
+                if provider in ["openai", "custom_openai"]:
+                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
+                elif provider == "gemini":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                    headers = {"Content-Type": "application/json"}
+                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
+                elif provider == "anthropic":
+                    url = "https://api.anthropic.com/v1/messages"
+                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
+                
+                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+                with urllib.request.urlopen(req_obj) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    if provider in ["openai", "custom_openai"]:
+                        output = res_data["choices"][0]["message"]["content"]
+                    elif provider == "gemini":
+                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                    elif provider == "anthropic":
+                        output = res_data["content"][0]["text"]
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+                    tf.write(prompt_str)
+                    temp_file_path = tf.name
+                try:
+                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
+                    output = proc.stdout.strip()
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                        
+            ai_summary = output
+        except Exception as e:
+            ai_summary = f"Failed to generate AI output: {str(e)}"
+            
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
 
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
