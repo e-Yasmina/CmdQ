@@ -169,6 +169,12 @@ function App() {
     }
   };
 
+  const refreshTableData = () => {
+    if (activeConnectionId && activeDatabase && activeSchemaName && activeTableName) {
+      handleTableClick(activeConnectionId, activeDatabase, activeSchemaName, activeTableName);
+    }
+  };
+
   const executeManualQuery = async (queryText) => {
     if (!activeConfig || !queryText.trim()) return;
     setSqlResult({ loading: true });
@@ -547,19 +553,29 @@ function App() {
               </div>
             )}
           </div>
+
           <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col">
-            {sqlResult?.type === 'security_analysis' ? (
-              <SecurityAnalysisViewer result={sqlResult} />
-            ) : sqlResult?.type === 'performance_analysis' ? (
-              <PerformanceAnalysisViewer result={sqlResult} />
-            ) : sqlResult?.type === 'data_analysis' ? (
-              <DataAnalysisViewer result={sqlResult} />
-            ) : sqlResult?.type === 'summary_analysis' ? (
-              <SummaryAnalysisViewer result={sqlResult} />
-            ) : (
-              <DataTable result={sqlResult} />
-            )}
+            <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
+              {sqlResult?.type === 'security_analysis' ? (
+                <SecurityAnalysisViewer result={sqlResult} />
+              ) : sqlResult?.type === 'performance_analysis' ? (
+                <PerformanceAnalysisViewer result={sqlResult} />
+              ) : sqlResult?.type === 'data_analysis' ? (
+                <DataAnalysisViewer result={sqlResult} />
+              ) : sqlResult?.type === 'summary_analysis' ? (
+                <SummaryAnalysisViewer result={sqlResult} />
+              ) : (
+                <DataTable
+                  result={sqlResult}
+                  activeConfig={activeConfig}
+                  activeSchemaName={activeSchemaName}
+                  activeTableName={activeTableName}
+                  onRefresh={refreshTableData}
+                />
+              )}
+            </ScrollArea>
           </div>
+
         </div>
       </main>
 

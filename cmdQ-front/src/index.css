@@ -30,4 +30,8 @@
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background-color: #58A6FF;
   }
+
+  .custom-cm .cm-editor.cm-focused {
+    outline: none !important;
+  }
 }
