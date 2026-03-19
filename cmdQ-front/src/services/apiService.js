@@ -127,5 +127,51 @@ export const apiService = {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch summary analysis");
         return data;
+    },
+
+    exportTable: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/export/table`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || errData.message || "Failed to export table");
+        }
+        return await res.blob();
+    },
+
+    exportDatabase: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/export/database`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || errData.message || "Failed to export database");
+        }
+        return await res.blob();
+    },
+
+    importTable: async (formData) => {
+        const res = await fetch(`${API_BASE_URL}/import/table`, {
+            method: "POST",
+            body: formData // No Content-Type header so browser sets multipart/form-data with boundary
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to import table");
+        return data;
+    },
+
+    importDatabase: async (formData) => {
+        const res = await fetch(`${API_BASE_URL}/import/database`, {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to import database");
+        return data;
     }
 };

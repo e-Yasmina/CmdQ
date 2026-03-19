@@ -3,6 +3,8 @@ import ScrollArea from './components/ScrollArea';
 import SchemaAccordion from './components/SchemaAccordion';
 import ConnectionForm from './components/forms/ConnectionForm';
 import ApiRegistrationForm from './components/forms/ApiRegistrationForm';
+import ExportForm from './components/forms/ExportForm';
+import ImportForm from './components/forms/ImportForm';
 import QueryEditor from './components/QueryEditor';
 import DataTable from './components/DataTable';
 import SecurityAnalysisViewer from './components/SecurityAnalysisViewer';
@@ -40,6 +42,10 @@ function App() {
   // View Mode: 'ai' | 'query'
   const [viewMode, setViewMode] = useState('ai');
   const [isQueryExecuting, setIsQueryExecuting] = useState(false);
+
+  // DB Export/Import Modal State
+  const [showExportDbModal, setShowExportDbModal] = useState(false);
+  const [showImportDbModal, setShowImportDbModal] = useState(false);
 
   const fetchClis = () => {
     apiService.fetchClis()
@@ -550,6 +556,9 @@ function App() {
                 <button onClick={() => launchAiAnalysis('performance')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">⚡ Performance</button>
                 <button onClick={() => launchAiAnalysis('data')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📊 Data Analysis</button>
                 <button onClick={() => launchAiAnalysis('summary')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📝 Summary</button>
+                <div className="h-4 w-px bg-border mx-1 self-center"></div>
+                <button onClick={() => setShowImportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📥 Import DB</button>
+                <button onClick={() => setShowExportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📤 Export DB</button>
               </div>
             )}
           </div>
@@ -582,6 +591,24 @@ function App() {
       <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui pointer-events-none">
         Press <kbd className="bg-panel border border-border rounded px-1">Ctrl+K</kbd> for Command Palette
       </div>
+
+      {showExportDbModal && activeConfig && (
+        <ExportForm
+          isDatabase={true}
+          targetName={activeDatabase}
+          activeConfig={activeConfig}
+          onCancel={() => setShowExportDbModal(false)}
+        />
+      )}
+      {showImportDbModal && activeConfig && (
+        <ImportForm
+          isDatabase={true}
+          targetName={activeDatabase}
+          activeConfig={activeConfig}
+          onCancel={() => setShowImportDbModal(false)}
+          onSuccess={() => handleDbChange(activeConnectionId, activeDatabase)}
+        />
+      )}
     </div>
   );
 }

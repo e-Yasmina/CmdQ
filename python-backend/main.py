@@ -1,6 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any, List
+import io
+import csv
 
 app = FastAPI(title="Antigravity Engine Sidecar")
 
@@ -1158,6 +1161,186 @@ async def ai_prompt(payload: AIPrompt):
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI Prompt Execution Failed: {str(e)}")
+
+class ExportTableRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str
+    table_name: str
+    format: str = "csv"
+
+class ExportDatabaseRequest(BaseModel):
+    db_config: ConnectionDetails
+    format: str = "sql"
+
+@app.post("/export/table")
+async def export_table(req: ExportTableRequest):
+    try:
+        session = get_db_connection(
+            db_type=req.db_config.db_type,
+            host=req.db_config.host,
+            port=req.db_config.port,
+            user=req.db_config.user,
+            password=req.db_config.password,
+            dbname=req.db_config.database
+        )
+        
+        if req.db_config.db_type == "postgres":
+            query = f'SELECT * FROM "{req.schema_name}"."{req.table_name}"'
+        else:
+            query = f"SELECT * FROM `{req.schema_name}`.`{req.table_name}`"
+            
+        result_proxy = session.execute(text(query))
+        rows = result_proxy.fetchall()
+        keys = list(result_proxy.keys())
+        session.close()
+
+        data_dicts = []
+        for row in rows:
+            row_dict = {}
+            for k, v in zip(keys, row):
+                row_dict[k] = str(v) if v is not None else None
+            data_dicts.append(row_dict)
+
+        if req.format == "json":
+            json_str = json.dumps(data_dicts, indent=2)
+            return Response(content=json_str, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={req.table_name}.json"})
+        
+        elif req.format == "csv":
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(data_dicts)
+            return Response(content=output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={req.table_name}.csv"})
+
+        elif req.format == "sql":
+            output = io.StringIO()
+            table_name_safe = req.table_name
+            for d in data_dicts:
+                cols = ", ".join([f'"{k}"' if req.db_config.db_type == 'postgres' else f"`{k}`" for k in keys])
+                vals = ", ".join([f"'{str(v).replace(chr(39), chr(39)+chr(39))}'" if v is not None else "NULL" for v in d.values()])
+                stmt = f"INSERT INTO {table_name_safe} ({cols}) VALUES ({vals});\n"
+                output.write(stmt)
+            return Response(content=output.getvalue(), media_type="application/sql", headers={"Content-Disposition": f"attachment; filename={req.table_name}.sql"})
+
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported format")
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Export Failed: {str(e)}")
+
+@app.post("/export/database")
+async def export_database(req: ExportDatabaseRequest, background_tasks: BackgroundTasks):
+    try:
+        cfg = req.db_config
+        fd, temp_path = tempfile.mkstemp(suffix=".sql")
+        os.close(fd)
+        
+        env = os.environ.copy()
+        if cfg.db_type == "postgres":
+            env["PGPASSWORD"] = cfg.password
+            cmd = ["pg_dump", "-h", cfg.host, "-p", str(cfg.port), "-U", cfg.user, "-d", cfg.database, "-f", temp_path]
+        else:
+            env["MYSQL_PWD"] = cfg.password
+            cmd = ["mysqldump", "-h", cfg.host, "-P", str(cfg.port), "-u", cfg.user, cfg.database, "-r", temp_path]
+            
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise Exception(proc.stderr)
+            
+        background_tasks.add_task(os.remove, temp_path)
+        return FileResponse(temp_path, media_type="application/sql", filename=f"{cfg.database}_dump.sql")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Database Export Failed: {str(e)}")
+
+@app.post("/import/table")
+async def import_table(
+    file: UploadFile = File(...),
+    db_config: str = Form(...),
+    schema_name: str = Form(...),
+    table_name: str = Form(...),
+    format: str = Form(...)
+):
+    try:
+        cfg_dict = json.loads(db_config)
+        cfg = ConnectionDetails(**cfg_dict)
+        
+        session = get_db_connection(
+            db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+            user=cfg.user, password=cfg.password, dbname=cfg.database
+        )
+        
+        content = await file.read()
+        content_str = content.decode("utf-8")
+        
+        inserted = 0
+        if format == "csv":
+            reader = csv.DictReader(io.StringIO(content_str))
+            for row in reader:
+                cols = list(row.keys())
+                col_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in cols])
+                val_plh = ", ".join([f":{k}" for k in cols])
+                
+                tbl_path = f'"{schema_name}"."{table_name}"' if cfg.db_type == 'postgres' else f"`{schema_name}`.`{table_name}`"
+                q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
+                session.execute(text(q), dict(row))
+                inserted += 1
+
+        elif format == "json":
+            data_arr = json.loads(content_str)
+            for row in data_arr:
+                cols = list(row.keys())
+                val_plh = ", ".join([f":{k}" for k in cols])
+                col_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in cols])
+                tbl_path = f'"{schema_name}"."{table_name}"' if cfg.db_type == 'postgres' else f"`{schema_name}`.`{table_name}`"
+                q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
+                session.execute(text(q), row)
+                inserted += 1
+                
+        elif format == "sql":
+            for stmt in content_str.split(';'):
+                if stmt.strip():
+                    session.execute(text(stmt))
+                    inserted += 1
+        else:
+             raise Exception("Unsupported format")
+             
+        session.commit()
+        session.close()
+        return {"status": "success", "message": f"Successfully imported data. Processed {inserted} items."}
+    except Exception as e:
+        return {"status": "error", "message": f"Table Import Failed: {str(e)}"}
+
+@app.post("/import/database")
+async def import_database(
+    file: UploadFile = File(...),
+    db_config: str = Form(...)
+):
+    try:
+        cfg_dict = json.loads(db_config)
+        cfg = ConnectionDetails(**cfg_dict)
+        
+        fd, temp_path = tempfile.mkstemp(suffix=".sql")
+        with os.fdopen(fd, "wb") as f:
+            content = await file.read()
+            f.write(content)
+            
+        env = os.environ.copy()
+        if cfg.db_type == "postgres":
+            env["PGPASSWORD"] = cfg.password
+            cmd = ["psql", "-h", cfg.host, "-p", str(cfg.port), "-U", cfg.user, "-d", cfg.database, "-f", temp_path]
+        else:
+            env["MYSQL_PWD"] = cfg.password
+            cmd = ["mysql", "-h", cfg.host, "-P", str(cfg.port), "-u", cfg.user, cfg.database, "-e", f"source {temp_path}"]
+            
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        os.remove(temp_path)
+        
+        if proc.returncode != 0:
+            raise Exception(proc.stderr)
+            
+        return {"status": "success", "message": "Database imported successfully."}
+    except Exception as e:
+        return {"status": "error", "message": f"Database Import Failed: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

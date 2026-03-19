@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
 import ScrollArea from './ScrollArea';
 import { apiService } from '../services/apiService';
+import ExportForm from './forms/ExportForm';
+import ImportForm from './forms/ImportForm';
 
 export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh }) {
     const [editingCell, setEditingCell] = useState(null); // { rowIndex, key, value }
     const [addingRow, setAddingRow] = useState(null);
     const [isMutating, setIsMutating] = useState(false);
     const [mutationError, setMutationError] = useState("");
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
 
     const canMutate = Boolean(activeConfig && activeSchemaName && activeTableName && onRefresh);
 
@@ -255,7 +259,21 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                         </table>
                     </ScrollArea>
                     {canMutate && !addingRow && (
-                        <div className="flex justify-end mt-2 shrink-0">
+                        <div className="flex justify-end mt-2 shrink-0 gap-2">
+                            <button
+                                onClick={() => setShowImportModal(true)}
+                                className="bg-panel border border-border hover:bg-white/5 text-secondary px-3 py-1.5 text-xs font-bold rounded transition-colors shadow-sm"
+                                disabled={isMutating}
+                            >
+                                📥 Import
+                            </button>
+                            <button
+                                onClick={() => setShowExportModal(true)}
+                                className="bg-panel border border-border hover:bg-white/5 text-secondary px-3 py-1.5 text-xs font-bold rounded transition-colors shadow-sm"
+                                disabled={isMutating}
+                            >
+                                📤 Export
+                            </button>
                             <button
                                 onClick={handleAddRowInit}
                                 className="bg-panel border border-border hover:bg-white/5 text-primary px-3 py-1.5 text-xs font-bold rounded transition-colors shadow-sm"
@@ -306,6 +324,28 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
 
             {!hasData && (result.extracted_sql || result.message) && (
                 <div className="text-gray-500 italic text-xs mt-2">Query executed successfully (0 rows returned).</div>
+            )}
+
+            {showExportModal && (
+                <ExportForm
+                    isDatabase={false}
+                    targetName={activeTableName || activeSchemaName}
+                    activeConfig={activeConfig}
+                    schemaName={activeSchemaName}
+                    tableName={activeTableName}
+                    onCancel={() => setShowExportModal(false)}
+                />
+            )}
+            {showImportModal && (
+                <ImportForm
+                    isDatabase={false}
+                    targetName={activeTableName || activeSchemaName}
+                    activeConfig={activeConfig}
+                    schemaName={activeSchemaName}
+                    tableName={activeTableName}
+                    onCancel={() => setShowImportModal(false)}
+                    onSuccess={onRefresh}
+                />
             )}
         </ScrollArea>
     );
