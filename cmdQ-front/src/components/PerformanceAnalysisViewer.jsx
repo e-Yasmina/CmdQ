@@ -1,8 +1,8 @@
 import React from 'react';
 import ScrollArea from './ScrollArea';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line } from 'recharts';
-
 import ReactMarkdown from 'react-markdown';
+import { PALETTE } from '../theme/palette';
 
 function MetricCard({ title, value, icon, description, status, children }) {
     const statusColor = status === 'danger' ? 'text-rose-500'
@@ -47,18 +47,18 @@ export default function PerformanceAnalysisViewer({ result }) {
         { name: 'Table Data', value: metrics.table_size_bytes || 0 },
         { name: 'Indexes', value: metrics.index_size_bytes || 0 }
     ];
-    const sizeColors = ['#10b981', '#3b82f6'];
+    const sizeColors = [PALETTE.chartEmerald, PALETTE.chartBlue];
 
     const scanData = [
-        { name: 'Seq Scans', value: metrics.seq_scans || 0, fill: '#f59e0b' },
-        { name: 'Idx Scans', value: metrics.idx_scans || 0, fill: '#6366f1' }
+        { name: 'Seq Scans', value: metrics.seq_scans || 0, fill: PALETTE.chartAmber },
+        { name: 'Idx Scans', value: metrics.idx_scans || 0, fill: PALETTE.chartIndigo }
     ];
 
     const bloatData = [
         { name: 'Live', value: metrics.live_rows || 0 },
         { name: 'Dead', value: metrics.dead_rows || 0 }
     ];
-    const bloatColors = ['#10b981', '#f43f5e'];
+    const bloatColors = [PALETTE.chartEmerald, PALETTE.chartRose];
 
     // -- DB Data --
     const cacheHitRatio = typeof metrics.cache_hit_ratio === 'number' ? (metrics.cache_hit_ratio * 100).toFixed(1) : 0;
@@ -66,7 +66,7 @@ export default function PerformanceAnalysisViewer({ result }) {
         { name: 'Cache Hits', value: metrics.cache_hits || 0 },
         { name: 'Disk Reads', value: metrics.disk_reads || 0 }
     ];
-    const cacheColors = ['#10b981', '#f43f5e'];
+    const cacheColors = [PALETTE.chartEmerald, PALETTE.chartRose];
 
     const activeConnections = metrics.total_connections || 0;
     const maxConnections = metrics.max_connections || 1;
@@ -86,7 +86,7 @@ export default function PerformanceAnalysisViewer({ result }) {
             </div>
 
             {ai_summary && (
-                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary shadow-[inset_0_0_15px_rgba(0,0,0,0.2)]">
+                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary" style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}>
                     <div className="flex items-center gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights:</span>
                     </div>
@@ -127,7 +127,7 @@ export default function PerformanceAnalysisViewer({ result }) {
                                         <Pie data={sizeData} innerRadius={40} outerRadius={60} paddingAngle={2} dataKey="value" stroke="none">
                                             {sizeData.map((entry, index) => <Cell key={`cell-${index}`} fill={sizeColors[index]} />)}
                                         </Pie>
-                                        <Tooltip formatter={(value) => formatBytes(value)} contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} />
+                                        <Tooltip formatter={(value) => formatBytes(value)} contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} />
                                         <Legend wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
@@ -146,8 +146,8 @@ export default function PerformanceAnalysisViewer({ result }) {
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={scanData} layout="vertical" margin={{ left: -15, right: 15, top: 0, bottom: 0 }}>
                                         <XAxis type="number" hide />
-                                        <YAxis dataKey="name" type="category" stroke="#888" fontSize={11} axisLine={false} tickLine={false} />
-                                        <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} cursor={{ fill: '#ffffff0a' }} />
+                                        <YAxis dataKey="name" type="category" stroke={PALETTE.chartTextMuted} fontSize={11} axisLine={false} tickLine={false} />
+                                        <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} cursor={{ fill: PALETTE.chartCursorFill }} />
                                         <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={30} />
                                     </BarChart>
                                 </ResponsiveContainer>
@@ -166,10 +166,10 @@ export default function PerformanceAnalysisViewer({ result }) {
                                 <div className="h-32 w-full flex items-center justify-center">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <PieChart>
-                                            <Pie data={bloatData} innerRadius={0} outerRadius={50} dataKey="value" stroke="#333" strokeWidth={2}>
+                                            <Pie data={bloatData} innerRadius={0} outerRadius={50} dataKey="value" stroke={PALETTE.chartBorder} strokeWidth={2}>
                                                 {bloatData.map((entry, index) => <Cell key={`cell-${index}`} fill={bloatColors[index]} />)}
                                             </Pie>
-                                            <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} />
+                                            <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} />
                                             <Legend wrapperStyle={{ fontSize: '10px' }} layout="vertical" verticalAlign="middle" align="right" />
                                         </PieChart>
                                     </ResponsiveContainer>
@@ -208,7 +208,7 @@ export default function PerformanceAnalysisViewer({ result }) {
                                         <Pie data={cacheData} innerRadius={40} outerRadius={60} paddingAngle={2} dataKey="value" stroke="none">
                                             {cacheData.map((entry, index) => <Cell key={`cell-${index}`} fill={cacheColors[index]} />)}
                                         </Pie>
-                                        <Tooltip formatter={(value) => value.toLocaleString()} contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} />
+                                        <Tooltip formatter={(value) => value.toLocaleString()} contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} />
                                         <Legend wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>

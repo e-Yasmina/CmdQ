@@ -2,6 +2,7 @@ import React from 'react';
 import ScrollArea from './ScrollArea';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import ReactMarkdown from 'react-markdown';
+import { PALETTE } from '../theme/palette';
 
 function SecurityCard({ title, value, icon, description, riskText, riskLevel, children }) {
     const riskColor = riskLevel === 'high' ? 'text-rose-500'
@@ -42,7 +43,7 @@ function SecurityAnalysisViewer({ result }) {
         { name: 'Sensitive', value: metrics.sensitive_columns?.length || 0 },
         { name: 'Standard', value: Math.max((metrics.total_columns || 0) - (metrics.sensitive_columns?.length || 0), 0) }
     ];
-    const columnColors = ['#f43f5e', '#10b981']; // rose-500, emerald-500
+    const columnColors = [PALETTE.chartRose, PALETTE.chartEmerald]; // rose-500, emerald-500
 
     const permissionsByGrantee = metrics.permissions?.reduce((acc, curr) => {
         acc[curr.grantee] = (acc[curr.grantee] || 0) + 1;
@@ -59,7 +60,7 @@ function SecurityAnalysisViewer({ result }) {
     const constraintsData = Object.keys(constraintTypes).map(type => ({
         name: type, value: constraintTypes[type]
     }));
-    const constraintColors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981'];
+    const constraintColors = [PALETTE.chartBlue, PALETTE.chartViolet, PALETTE.chartPink, PALETTE.chartAmber, PALETTE.chartEmerald];
 
     // Chart Data Preparation - Database Level
     const adminsCount = metrics.admins?.length || 0;
@@ -68,7 +69,7 @@ function SecurityAnalysisViewer({ result }) {
         { name: 'Admins', value: adminsCount },
         { name: 'Standard Users', value: regularUsersCount }
     ];
-    const usersColors = ['#f43f5e', '#10b981'];
+    const usersColors = [PALETTE.chartRose, PALETTE.chartEmerald];
 
     return (
         <ScrollArea className="flex-1 p-6 space-y-6 overflow-y-auto">
@@ -84,7 +85,7 @@ function SecurityAnalysisViewer({ result }) {
             </div>
 
             {ai_summary && (
-                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary shadow-[inset_0_0_15px_rgba(0,0,0,0.2)]">
+                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary" style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}>
                     <div className="flex items-center gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights:</span>
                     </div>
@@ -128,7 +129,7 @@ function SecurityAnalysisViewer({ result }) {
                                                 <Cell key={`cell-${index}`} fill={columnColors[index % columnColors.length]} />
                                             ))}
                                         </Pie>
-                                        <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} itemStyle={{ color: '#fff' }} />
+                                        <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} itemStyle={{ color: PALETTE.chartTextWhite }} />
                                         <Legend wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
@@ -159,11 +160,11 @@ function SecurityAnalysisViewer({ result }) {
                                 <div className="h-40 w-full mb-4">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <BarChart data={permissionsData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
-                                            <XAxis dataKey="name" stroke="#888" fontSize={10} tickLine={false} axisLine={false} />
-                                            <YAxis stroke="#888" fontSize={10} allowDecimals={false} tickLine={false} axisLine={false} />
-                                            <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333', borderRadius: '4px' }} cursor={{ fill: '#ffffff0a' }} />
-                                            <Bar dataKey="Privileges" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.chartBorder} vertical={false} />
+                                            <XAxis dataKey="name" stroke={PALETTE.chartTextMuted} fontSize={10} tickLine={false} axisLine={false} />
+                                            <YAxis stroke={PALETTE.chartTextMuted} fontSize={10} allowDecimals={false} tickLine={false} axisLine={false} />
+                                            <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder, borderRadius: '4px' }} cursor={{ fill: PALETTE.chartCursorFill }} />
+                                            <Bar dataKey="Privileges" fill={PALETTE.chartIndigo} radius={[4, 4, 0, 0]} maxBarSize={40} />
                                         </BarChart>
                                     </ResponsiveContainer>
                                 </div>
@@ -201,7 +202,7 @@ function SecurityAnalysisViewer({ result }) {
                                                     <Cell key={`cell-${index}`} fill={constraintColors[index % constraintColors.length]} />
                                                 ))}
                                             </Pie>
-                                            <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} itemStyle={{ color: '#fff' }} />
+                                            <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} itemStyle={{ color: PALETTE.chartTextWhite }} />
                                         </PieChart>
                                     </ResponsiveContainer>
                                 </div>
@@ -240,7 +241,7 @@ function SecurityAnalysisViewer({ result }) {
                                                 <Cell key={`cell-${index}`} fill={usersColors[index % usersColors.length]} />
                                             ))}
                                         </Pie>
-                                        <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} itemStyle={{ color: '#fff' }} />
+                                        <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} itemStyle={{ color: PALETTE.chartTextWhite }} />
                                         <Legend wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>

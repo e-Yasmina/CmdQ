@@ -2,6 +2,7 @@ import React from 'react';
 import ScrollArea from './ScrollArea';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import ReactMarkdown from 'react-markdown';
+import { PALETTE } from '../theme/palette';
 
 function MetricCard({ title, value, icon, description, status, children }) {
     const statusColor = status === 'danger' ? 'text-rose-500'
@@ -61,7 +62,7 @@ export default function DataAnalysisViewer({ result }) {
             </div>
 
             {ai_summary && (
-                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary shadow-[inset_0_0_15px_rgba(0,0,0,0.2)]">
+                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary" style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}>
                     <div className="flex items-center gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights:</span>
                     </div>
@@ -115,12 +116,12 @@ export default function DataAnalysisViewer({ result }) {
                             <div className="h-48 w-full mt-4">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={colChartData} margin={{ left: -15, right: 15, top: 0, bottom: 0 }}>
-                                        <XAxis dataKey="name" stroke="#888" fontSize={9} tick={{ fill: '#888' }} angle={-25} textAnchor="end" height={40} />
-                                        <YAxis stroke="#888" fontSize={11} axisLine={false} tickLine={false} />
-                                        <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333' }} cursor={{ fill: '#ffffff0a' }} />
+                                        <XAxis dataKey="name" stroke={PALETTE.chartTextMuted} fontSize={9} tick={{ fill: PALETTE.chartTextMuted }} angle={-25} textAnchor="end" height={40} />
+                                        <YAxis stroke={PALETTE.chartTextMuted} fontSize={11} axisLine={false} tickLine={false} />
+                                        <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder }} cursor={{ fill: PALETTE.chartCursorFill }} />
                                         <Legend wrapperStyle={{ fontSize: '10px' }} />
-                                        <Bar dataKey="FillRate" fill="#10b981" radius={[2, 2, 0, 0]} name="Fill Rate %" maxBarSize={30} />
-                                        <Bar dataKey="UniqueRatio" fill="#6366f1" radius={[2, 2, 0, 0]} name="Unique Ratio %" maxBarSize={30} />
+                                        <Bar dataKey="FillRate" fill={PALETTE.chartEmerald} radius={[2, 2, 0, 0]} name="Fill Rate %" maxBarSize={30} />
+                                        <Bar dataKey="UniqueRatio" fill={PALETTE.chartIndigo} radius={[2, 2, 0, 0]} name="Unique Ratio %" maxBarSize={30} />
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>
@@ -153,11 +154,11 @@ export default function DataAnalysisViewer({ result }) {
                             <div className="h-48 w-full mt-4">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={dbRowsChartData} layout="vertical" margin={{ left: 10, right: 15, top: 0, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#333" />
-                                        <XAxis type="number" stroke="#888" fontSize={10} />
-                                        <YAxis dataKey="name" type="category" stroke="#888" fontSize={11} axisLine={false} tickLine={false} width={80} />
-                                        <Tooltip contentStyle={{ backgroundColor: '#1e1e24', borderColor: '#333', fontSize: '12px' }} cursor={{ fill: '#ffffff0a' }} formatter={(val) => val.toLocaleString()} />
-                                        <Bar dataKey="rows" fill="#f59e0b" radius={[0, 4, 4, 0]} maxBarSize={20} />
+                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={PALETTE.chartBorder} />
+                                        <XAxis type="number" stroke={PALETTE.chartTextMuted} fontSize={10} />
+                                        <YAxis dataKey="name" type="category" stroke={PALETTE.chartTextMuted} fontSize={11} axisLine={false} tickLine={false} width={80} />
+                                        <Tooltip contentStyle={{ backgroundColor: PALETTE.tooltipBg, borderColor: PALETTE.chartBorder, fontSize: '12px' }} cursor={{ fill: PALETTE.chartCursorFill }} formatter={(val) => val.toLocaleString()} />
+                                        <Bar dataKey="rows" fill={PALETTE.chartAmber} radius={[0, 4, 4, 0]} maxBarSize={20} />
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>

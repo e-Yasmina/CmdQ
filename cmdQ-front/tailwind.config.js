@@ -1,3 +1,5 @@
+import { PALETTE } from './src/theme/palette.js';
+
 /** @type {import('tailwindcss').Config} */
 export default {
     content: [
@@ -7,12 +9,12 @@ export default {
     theme: {
         extend: {
             colors: {
-                background: '#0D1117',
-                panel: '#161B22',
-                border: '#30363D',
-                primary: '#00FF41',
-                secondary: '#58A6FF',
-                textPrimary: '#C9D1D9',
+                background: PALETTE.background,
+                panel: PALETTE.panel,
+                border: PALETTE.border,
+                primary: PALETTE.primary,
+                secondary: PALETTE.secondary,
+                textPrimary: PALETTE.textPrimary,
             },
             fontFamily: {
                 ui: ['Inter', 'Geist', 'sans-serif'],

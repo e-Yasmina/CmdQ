@@ -1,6 +1,7 @@
 import React from 'react';
 import ScrollArea from './ScrollArea';
 import ReactMarkdown from 'react-markdown';
+import { PALETTE } from '../theme/palette';
 
 function MetricCard({ title, value, icon, description, status, children }) {
     const statusColor = status === 'danger' ? 'text-rose-500'
@@ -57,7 +58,7 @@ export default function SummaryAnalysisViewer({ result }) {
             </div>
 
             {ai_summary && (
-                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary shadow-[inset_0_0_15px_rgba(0,0,0,0.2)]">
+                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary" style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}>
                     <div className="flex items-center gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights & Context:</span>
                     </div>
