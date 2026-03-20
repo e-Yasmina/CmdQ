@@ -131,6 +131,36 @@ async def get_databases(details: ConnectionDetails):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database list extraction failed: {str(e)}")
 
+class CreateDatabaseRequest(BaseModel):
+    db_config: ConnectionDetails
+    new_db_name: str
+
+@app.post("/create_database")
+async def create_database(req: CreateDatabaseRequest):
+    """Creates a new database."""
+    try:
+        from sqlalchemy import create_engine
+        import urllib.parse
+        
+        cfg = req.db_config
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+        
+        if cfg.db_type == "postgres":
+            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/postgres"
+            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
+            with engine.connect() as conn:
+                conn.execute(text(f'CREATE DATABASE "{req.new_db_name}"'))
+        else:
+            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
+            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
+            with engine.connect() as conn:
+                conn.execute(text(f'CREATE DATABASE `{req.new_db_name}`'))
+                
+        return {"status": "success", "message": f"Database '{req.new_db_name}' created successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to create database: {str(e)}")
+
 @app.post("/schema")
 async def get_schema(details: ConnectionDetails):
     """Executes SELECT queries against information_schema in read-only mode."""

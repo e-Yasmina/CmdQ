@@ -5,6 +5,7 @@ import ConnectionForm from './components/forms/ConnectionForm';
 import ApiRegistrationForm from './components/forms/ApiRegistrationForm';
 import ExportForm from './components/forms/ExportForm';
 import ImportForm from './components/forms/ImportForm';
+import CreateDatabaseForm from './components/forms/CreateDatabaseForm';
 import QueryEditor from './components/QueryEditor';
 import DataTable from './components/DataTable';
 import SecurityAnalysisViewer from './components/SecurityAnalysisViewer';
@@ -46,6 +47,9 @@ function App() {
   // DB Export/Import Modal State
   const [showExportDbModal, setShowExportDbModal] = useState(false);
   const [showImportDbModal, setShowImportDbModal] = useState(false);
+
+  // Create DB Modal State
+  const [showCreateDbModal, setShowCreateDbModal] = useState(false);
 
   const fetchClis = () => {
     apiService.fetchClis()
@@ -136,6 +140,20 @@ function App() {
 
     setChatHistory([]);
     setSqlResult(null);
+  };
+
+  const handleCreateDatabaseSuccess = (newDbName) => {
+    const connIndex = connections.findIndex(c => c.id === activeConnectionId);
+    if (connIndex >= 0) {
+      setConnections(prev => {
+        const newConns = [...prev];
+        if (!newConns[connIndex].databases.includes(newDbName)) {
+          newConns[connIndex].databases = [...newConns[connIndex].databases, newDbName].sort();
+        }
+        return newConns;
+      });
+      handleDbChange(activeConnectionId, newDbName);
+    }
   };
 
   const handleTableClick = async (connId, dbName, schemaName, tableName) => {
@@ -393,6 +411,16 @@ function App() {
               <div key={conn.id} className="mb-4">
                 <div className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between">
                   <span>🖥️ {conn.id}</span>
+                  <button
+                    onClick={() => {
+                      setActiveConnectionId(conn.id);
+                      setShowCreateDbModal(true);
+                    }}
+                    className="text-primary hover:text-white cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
+                    title="Create Database"
+                  >
+                    + DB
+                  </button>
                 </div>
                 <div className="space-y-0.5 mt-2">
                   {conn.databases.map(db => {
@@ -591,6 +619,14 @@ function App() {
       <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui pointer-events-none">
         Press <kbd className="bg-panel border border-border rounded px-1">Ctrl+K</kbd> for Command Palette
       </div>
+
+      {showCreateDbModal && activeConn && (
+        <CreateDatabaseForm
+          activeConfig={{ ...activeConn.config, database: "" }}
+          onCancel={() => setShowCreateDbModal(false)}
+          onSuccess={handleCreateDatabaseSuccess}
+        />
+      )}
 
       {showExportDbModal && activeConfig && (
         <ExportForm

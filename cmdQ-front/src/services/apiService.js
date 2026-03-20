@@ -23,6 +23,17 @@ export const apiService = {
         return data;
     },
 
+    createDatabase: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/create_database`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to create database");
+        return data;
+    },
+
     fetchSchema: async (payload) => {
         const res = await fetch(`${API_BASE_URL}/schema`, {
             method: "POST",
