@@ -69,6 +69,21 @@ class SummaryAnalysisRequest(BaseModel):
     table_name: str = ""
     command: str = ""
 
+class FieldMapping(BaseModel):
+    source_fields: List[str]
+    target_fields: List[str] = []
+    target_field: str = ""
+    transformation: str = "none"
+
+class DataMigrationRequest(BaseModel):
+    source_config: ConnectionDetails
+    source_schema: str = ""
+    source_table: str
+    target_config: ConnectionDetails
+    target_schema: str = ""
+    target_table: str
+    mappings: List[FieldMapping]
+
 import socket
 
 class PortCheckDetails(BaseModel):
@@ -161,6 +176,41 @@ async def create_database(req: CreateDatabaseRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to create database: {str(e)}")
 
+class DropDatabaseRequest(BaseModel):
+    db_config: ConnectionDetails
+    db_name: str
+
+@app.post("/drop_database")
+async def drop_database(req: DropDatabaseRequest):
+    """Drops an existing database."""
+    try:
+        from sqlalchemy import create_engine
+        import urllib.parse
+        
+        cfg = req.db_config
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+        
+        if req.db_name.lower() in ["postgres", "sys", "information_schema", "mysql", "performance_schema"]:
+            raise ValueError("Cannot drop critical system databases.")
+            
+        if cfg.db_type == "postgres":
+            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/postgres"
+            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
+            with engine.connect() as conn:
+                # Terminate active connections before dropping exactly like pgAdmin
+                conn.execute(text(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{req.db_name}' AND pid <> pg_backend_pid()"))
+                conn.execute(text(f'DROP DATABASE "{req.db_name}"'))
+        else:
+            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
+            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
+            with engine.connect() as conn:
+                conn.execute(text(f'DROP DATABASE `{req.db_name}`'))
+                
+        return {"status": "success", "message": f"Database '{req.db_name}' dropped successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to drop database: {str(e)}")
+
 @app.post("/schema")
 async def get_schema(details: ConnectionDetails):
     """Executes SELECT queries against information_schema in read-only mode."""
@@ -214,31 +264,36 @@ async def get_schema(details: ConnectionDetails):
 async def execute_query(req: QueryRequest):
     """Executes an arbitrary SQL query and returns the results."""
     try:
-        session = get_db_connection(
-            db_type=req.db_config.db_type,
-            host=req.db_config.host,
-            port=req.db_config.port,
-            user=req.db_config.user,
-            password=req.db_config.password,
-            dbname=req.db_config.database
-        )
+        from sqlalchemy import create_engine
+        import urllib.parse
         
-        result_proxy = session.execute(text(req.query))
-        execution_results = []
+        cfg = req.db_config
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
         
-        if result_proxy.returns_rows:
-            rows = result_proxy.fetchall()
-            keys = result_proxy.keys()
-            for row in rows:
-                # Stringify values to prevent JSON serialization errors (e.g. UUID, datetime)
-                row_dict = {}
-                for k, v in zip(keys, row):
-                    row_dict[k] = str(v) if v is not None else None
-                execution_results.append(row_dict)
-                
-        session.commit()
-        session.close()
+        if cfg.db_type == "postgres":
+            dbname = cfg.database if cfg.database else "postgres"
+            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{dbname}"
+        else:
+            db_part = f"/{cfg.database}" if cfg.database else ""
+            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}{db_part}"
+            
+        engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
         
+        with engine.connect() as conn:
+            result_proxy = conn.execute(text(req.query))
+            execution_results = []
+            
+            if result_proxy.returns_rows:
+                rows = result_proxy.fetchall()
+                keys = result_proxy.keys()
+                for row in rows:
+                    # Stringify values to prevent JSON serialization errors (e.g. UUID, datetime)
+                    row_dict = {}
+                    for k, v in zip(keys, row):
+                        row_dict[k] = str(v) if v is not None else None
+                    execution_results.append(row_dict)
+                    
         return {"status": "success", "data": execution_results, "message": "Query executed successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {str(e)}"}
@@ -1149,24 +1204,76 @@ async def ai_prompt(payload: AIPrompt):
                     break
                     
                 # Open direct session using the injected credentials
-                session = get_db_connection(
-                    db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
-                    user=cfg.user, password=cfg.password, dbname=cfg.database
-                )
+                from sqlalchemy import create_engine
+                
+                # Split SQL into individual statements
+                raw_statements = [s.strip() for s in extracted_sql.split(';') if s.strip()]
+                parsed_statements = []
+                
+                for s in raw_statements:
+                    cleaned_lines = []
+                    local_switch = None
+                    for line in s.split("\n"):
+                        l_strip = line.strip()
+                        if l_strip.startswith("\\c ") or l_strip.startswith("\\connect "):
+                            # Capture the requested db switch explicitly!
+                            parts = l_strip.split()
+                            if len(parts) >= 2:
+                                local_switch = parts[1].strip(';"\'`')
+                        else:
+                            cleaned_lines.append(line)
+                            
+                    cleaned_stmt = "\n".join(cleaned_lines).strip()
+                    if cleaned_stmt or local_switch:
+                        parsed_statements.append({
+                            "stmt": cleaned_stmt,
+                            "switch_db": local_switch
+                        })
+                
+                current_db = cfg.database
+                if cfg.db_type == "postgres" and not current_db:
+                    current_db = "postgres"
+                    
                 try:
-                    # Execute the modeled SQL directly on the live DB
-                    result_proxy = session.execute(text(extracted_sql))
-                    if result_proxy.returns_rows:
-                        rows = result_proxy.fetchall()
-                        # Convert row tuples to generic dicts safely using mapping
-                        keys = result_proxy.keys()
-                        execution_results = [dict(zip(keys, row)) for row in rows]
-                    session.commit()
-                    session.close()
+                    for item in parsed_statements:
+                        stmt = item["stmt"]
+                        force_db = item["switch_db"]
+                        
+                        # Apply explicit context switch BEFORE evaluating this statement block
+                        if force_db:
+                            current_db = force_db
+                            
+                        if not stmt:
+                            # Might just be a \c command block without actual sql code following
+                            continue
+                            
+                        new_db_name = None
+                        db_match = re.search(r'CREATE\s+DATABASE\s+([a-zA-Z0-9_]+)', stmt, re.IGNORECASE)
+                        if db_match:
+                            new_db_name = db_match.group(1).replace('"', '').replace("'", "").replace('`', '').strip()
+                            
+                        # Build context URL
+                        if cfg.db_type == "postgres":
+                            temp_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{current_db}"
+                        else:
+                            temp_part = f"/{current_db}" if current_db else ""
+                            temp_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}{temp_part}"
+                            
+                        # Connect and execute the single statement
+                        engine = create_engine(temp_url, isolation_level="AUTOCOMMIT")
+                        with engine.connect() as conn:
+                            result_proxy = conn.execute(text(stmt))
+                            if result_proxy.returns_rows:
+                                rows = result_proxy.fetchall()
+                                keys = result_proxy.keys()
+                                execution_results = [dict(zip(keys, row)) for row in rows]
+                        
+                        # If a DB was natively created, implicitly switch future statements into it
+                        if new_db_name:
+                            current_db = new_db_name
+                            
                     break # Execution successful, exit loop
                 except Exception as sql_err:
-                    session.rollback()
-                    session.close()
                     execution_results = [{"error": str(sql_err)}]
                     
                     if attempt < MAX_RETRIES - 1:
@@ -1371,6 +1478,99 @@ async def import_database(
         return {"status": "success", "message": "Database imported successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Database Import Failed: {str(e)}"}
+
+@app.post("/etl/migrate")
+async def etl_migrate(req: DataMigrationRequest):
+    """Extracts, transforms, and loads data mapping seamlessly between databases."""
+    try:
+        # Extract
+        src_session = get_db_connection(
+            db_type=req.source_config.db_type, host=req.source_config.host, port=req.source_config.port,
+            user=req.source_config.user, password=req.source_config.password, dbname=req.source_config.database
+        )
+        
+        src_schema = req.source_schema or "public" if req.source_config.db_type == "postgres" else req.source_schema
+        src_tbl = f'"{src_schema}"."{req.source_table}"' if req.source_config.db_type == 'postgres' else f"`{src_schema}`.`{req.source_table}`"
+        
+        src_query = f"SELECT * FROM {src_tbl}"
+        src_res = src_session.execute(text(src_query))
+        src_data = []
+        if src_res.returns_rows:
+            keys = src_res.keys()
+            for row in src_res.fetchall():
+                src_data.append(dict(zip(keys, row)))
+        src_session.close()
+
+        # Transform
+        transformed_data = []
+        for src_row in src_data:
+            tgt_row = {}
+            for m in req.mappings:
+                src_val = src_row.get(m.source_fields[0]) if len(m.source_fields) > 0 else None
+                
+                if m.transformation == "concat":
+                    val = " ".join([str(src_row.get(f)) for f in m.source_fields if src_row.get(f) is not None])
+                    if len(m.target_fields) > 0:
+                        tgt_row[m.target_fields[0]] = val
+                elif m.transformation == "split":
+                    if src_val is not None:
+                        parts = str(src_val).split(" ")
+                        for i, tgt_f in enumerate(m.target_fields):
+                            if i < len(parts):
+                                tgt_row[tgt_f] = parts[i]
+                            else:
+                                tgt_row[tgt_f] = ""
+                else:
+                    val = src_val
+                    if m.transformation == "split_first":
+                        if src_val is not None:
+                            val = str(src_val).split(" ")[0]
+                    elif m.transformation == "split_last":
+                        if src_val is not None:
+                            parts = str(src_val).split(" ")
+                            val = parts[-1] if len(parts) > 1 else ""
+                    elif m.transformation == "cast_int":
+                        if val is not None:
+                            try:
+                                val = int(val)
+                            except ValueError:
+                                val = 0
+                    elif m.transformation == "cast_str":
+                        if val is not None:
+                            val = str(val)
+                            
+                    if len(m.target_fields) > 0:
+                        tgt_row[m.target_fields[0]] = val
+            transformed_data.append(tgt_row)
+
+        if not transformed_data:
+            return {"status": "success", "message": "No data found to migrate."}
+
+        # Load
+        tgt_session = get_db_connection(
+            db_type=req.target_config.db_type, host=req.target_config.host, port=req.target_config.port,
+            user=req.target_config.user, password=req.target_config.password, dbname=req.target_config.database
+        )
+        
+        tgt_schema = req.target_schema or "public" if req.target_config.db_type == "postgres" else req.target_schema
+        tgt_tbl = f'"{tgt_schema}"."{req.target_table}"' if req.target_config.db_type == 'postgres' else f"`{tgt_schema}`.`{req.target_table}`"
+        
+        inserted = 0
+        tgt_cols = list(transformed_data[0].keys())
+        col_str = ", ".join([f'"{k}"' if req.target_config.db_type == 'postgres' else f"`{k}`" for k in tgt_cols])
+        val_plh = ", ".join([f":{k}" for k in tgt_cols])
+        ins_q = f"INSERT INTO {tgt_tbl} ({col_str}) VALUES ({val_plh})"
+        
+        for tgt_row in transformed_data:
+            tgt_session.execute(text(ins_q), tgt_row)
+            inserted += 1
+            
+        tgt_session.commit()
+        tgt_session.close()
+        
+        return {"status": "success", "message": f"Successfully migrated {inserted} rows."}
+    except Exception as e:
+        return {"status": "error", "message": f"Data Migration Failed: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

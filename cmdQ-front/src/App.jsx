@@ -12,6 +12,7 @@ import SecurityAnalysisViewer from './components/SecurityAnalysisViewer';
 import PerformanceAnalysisViewer from './components/PerformanceAnalysisViewer';
 import DataAnalysisViewer from './components/DataAnalysisViewer';
 import SummaryAnalysisViewer from './components/SummaryAnalysisViewer';
+import DataMigrationForm from './components/forms/DataMigrationForm';
 import { apiService } from './services/apiService';
 
 function App() {
@@ -28,7 +29,7 @@ function App() {
 
   // Derived state
   const activeConn = connections.find(c => c.id === activeConnectionId);
-  const activeConfig = activeConn ? { ...activeConn.config, database: activeDatabase } : null;
+  const activeConfig = activeConn ? { ...activeConn.config, database: activeDatabase || "" } : null;
   const activeSchema = activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null;
 
   // AI CLI State
@@ -47,6 +48,9 @@ function App() {
   // DB Export/Import Modal State
   const [showExportDbModal, setShowExportDbModal] = useState(false);
   const [showImportDbModal, setShowImportDbModal] = useState(false);
+
+  // Data Migration Modal State
+  const [showMigrationModal, setShowMigrationModal] = useState(false);
 
   // Create DB Modal State
   const [showCreateDbModal, setShowCreateDbModal] = useState(false);
@@ -111,6 +115,44 @@ function App() {
     setSqlResult(null);
   };
 
+  const handleRefreshConnection = async (connId) => {
+    const connIndex = connections.findIndex(c => c.id === connId);
+    if (connIndex === -1) return;
+
+    const conn = connections[connIndex];
+    try {
+      // Re-fetch databases
+      const dbsData = await apiService.connectDb(conn.config);
+      if (dbsData.status === "success") {
+        setConnections(prev => {
+          const newConns = [...prev];
+          newConns[connIndex] = { ...conn, databases: dbsData.databases.sort() };
+          return newConns;
+        });
+      }
+
+      // Re-fetch schema for active database if it belongs to this connection
+      if (activeConnectionId === connId && activeDatabase) {
+        const configForDb = { ...conn.config, database: activeDatabase };
+        const schema = await fetchSchema(configForDb);
+        setConnections(prev => {
+          const newConns = [...prev];
+          newConns[connIndex] = {
+            ...newConns[connIndex],
+            schemas: {
+              ...newConns[connIndex].schemas,
+              [activeDatabase]: schema
+            }
+          };
+          return newConns;
+        });
+      }
+    } catch (err) {
+      console.error("Failed to refresh connection:", err);
+      alert("Failed to refresh connection: " + err.message);
+    }
+  };
+
   const handleDbChange = async (connId, dbName) => {
     setActiveConnectionId(connId);
     setActiveDatabase(dbName);
@@ -153,6 +195,45 @@ function App() {
         return newConns;
       });
       handleDbChange(activeConnectionId, newDbName);
+    }
+  };
+
+  const handleDropDatabase = async (connId, dbName) => {
+    if (!window.confirm(`Are you sure you want to permanently delete the database "${dbName}"?\nThis action cannot be undone.`)) {
+      return;
+    }
+
+    const connIndex = connections.findIndex(c => c.id === connId);
+    if (connIndex === -1) return;
+    const conn = connections[connIndex];
+
+    try {
+      await apiService.dropDatabase({
+        db_config: conn.config,
+        db_name: dbName
+      });
+
+      // Update local state to remove the dropped DB
+      setConnections(prev => {
+        const newConns = [...prev];
+        const newDbs = conn.databases.filter(d => d !== dbName);
+        newConns[connIndex] = { ...conn, databases: newDbs };
+        return newConns;
+      });
+
+      // If we dropped the currently active DB, clear the view
+      if (activeConnectionId === connId && activeDatabase === dbName) {
+        setActiveDatabase(null);
+        setActiveSchemaName(null);
+        setActiveTableName(null);
+        setSqlResult(null);
+        setChatHistory([]);
+      }
+
+      alert(`Database '${dbName}' dropped successfully.`);
+    } catch (err) {
+      console.error("Failed to drop database:", err);
+      alert("Error dropping database: " + err.message);
     }
   };
 
@@ -376,6 +457,44 @@ function App() {
     return;
   };
 
+  const renderMessageContent = (content) => {
+    const paragraphs = content.split('\n\n');
+    const processParagraphs = [];
+    const resultParagraphs = [];
+
+    let isProcess = true;
+    for (const p of paragraphs) {
+      const pLower = p.toLowerCase();
+      if (p.startsWith('```') || pLower.includes('here is') || pLower.includes('to determine') || pLower.includes('the answer') || pLower.includes('you can execute')) {
+        isProcess = false;
+      }
+
+      if (isProcess && (p.startsWith('#') || pLower.includes('i will ') || pLower.includes('let me ') || pLower.includes('let\'s '))) {
+        processParagraphs.push(p);
+      } else {
+        isProcess = false;
+        resultParagraphs.push(p);
+      }
+    }
+
+    if (processParagraphs.length > 0 && resultParagraphs.length > 0) {
+      return (
+        <div className="flex flex-col gap-2 w-full mt-1">
+          <details className="text-gray-500 text-[11px] group">
+            <summary className="cursor-pointer font-bold opacity-70 hover:opacity-100 transition-opacity list-none flex items-center gap-1 w-max">
+              <span className="group-open:rotate-90 transition-transform text-[8px]">▶</span> View Agent Process
+            </summary>
+            <div className="mt-2 pl-3 border-l-2 border-border/50 font-sans text-gray-400">
+              {processParagraphs.join('\n\n')}
+            </div>
+          </details>
+          <div className="whitespace-pre-wrap">{resultParagraphs.join('\n\n')}</div>
+        </div>
+      );
+    }
+    return <span className="whitespace-pre-wrap">{content}</span>;
+  };
+
   // Define CSS variables dynamically if needed, or stick to Tailwind classes
   return (
     <div className="h-screen w-screen flex bg-background text-textPrimary font-ui flex-row relative">
@@ -411,16 +530,28 @@ function App() {
               <div key={conn.id} className="mb-4">
                 <div className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between">
                   <span>🖥️ {conn.id}</span>
-                  <button
-                    onClick={() => {
-                      setActiveConnectionId(conn.id);
-                      setShowCreateDbModal(true);
-                    }}
-                    className="text-primary hover:text-white cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
-                    title="Create Database"
-                  >
-                    + DB
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRefreshConnection(conn.id);
+                      }}
+                      className="text-gray-400 hover:text-primary cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
+                      title="Refresh Databases & Schema"
+                    >
+                      🔄
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveConnectionId(conn.id);
+                        setShowCreateDbModal(true);
+                      }}
+                      className="text-primary hover:text-white cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
+                      title="Create Database"
+                    >
+                      + DB
+                    </button>
+                  </div>
                 </div>
                 <div className="space-y-0.5 mt-2">
                   {conn.databases.map(db => {
@@ -428,10 +559,22 @@ function App() {
                     return (
                       <div key={db} className="ml-2">
                         <div
-                          className={`cursor-pointer px-2 py-1 flex items-center gap-2 rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                          className={`group cursor-pointer px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
                           onClick={() => handleDbChange(conn.id, db)}
                         >
-                          💾 <span className="truncate">{db}</span>
+                          <div className="flex items-center gap-2 truncate pr-2">
+                            💾 <span className="truncate">{db}</span>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDropDatabase(conn.id, db);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
+                            title="Delete Database"
+                          >
+                            🗑️
+                          </button>
                         </div>
                         {isActive && (
                           <div className="ml-4 mt-2 mb-2">
@@ -543,8 +686,11 @@ function App() {
               <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
               {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
               {chatHistory.map((msg, i) => (
-                <div key={i} className={`mb-1 ${msg.role === 'user' ? 'text-primary' : 'text-gray-400'}`}>
-                  <span className="opacity-50">{msg.role === 'user' ? '>' : '#'}</span> {msg.role === 'user' ? msg.content : (msg.content.substring(0, 100).replace(/\n/g, " ") + (msg.content.length > 100 ? "..." : ""))}
+                <div key={i} className={`mb-1 whitespace-pre-wrap ${msg.role === 'user' ? 'text-primary font-bold' : 'text-gray-400'}`}>
+                  <span className="opacity-50 inline-block mr-1 align-top">{msg.role === 'user' ? '>' : '#'}</span>
+                  <div className="inline-block" style={{ width: 'calc(100% - 20px)' }}>
+                    {msg.role === 'user' ? msg.content : renderMessageContent(msg.content)}
+                  </div>
                 </div>
               ))}
             </ScrollArea>
@@ -574,12 +720,12 @@ function App() {
 
         <div className="flex-1 bg-background p-4 flex flex-col min-h-0">
           <div className="flex justify-between items-center mb-2">
-            <h2 className="text-xs uppercase text-gray-500 font-bold tracking-wider">Execution Results</h2>
+            <h2 className="text-xs uppercase text-gray-500 font-bold tracking-wider mr-8">Results:</h2>
             {activeDatabase && (
               <div className="flex gap-2">
-                <span className="text-xs text-gray-500 self-center mr-2 uppercase font-bold tracking-wider">
+                {/* <span className="text-xs text-gray-500 self-center mr-2 uppercase font-bold tracking-wider">
                   Analyze {activeTableName ? 'Table' : 'Database'}:
-                </span>
+                </span> */}
                 <button onClick={() => launchAiAnalysis('security')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">🔒 Security</button>
                 <button onClick={() => launchAiAnalysis('performance')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">⚡ Performance</button>
                 <button onClick={() => launchAiAnalysis('data')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📊 Data Analysis</button>
@@ -587,6 +733,7 @@ function App() {
                 <div className="h-4 w-px bg-border mx-1 self-center"></div>
                 <button onClick={() => setShowImportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📥 Import DB</button>
                 <button onClick={() => setShowExportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📤 Export DB</button>
+                <button onClick={() => setShowMigrationModal(true)} className="bg-primary/20 border border-primary/50 text-primary hover:bg-primary hover:text-background px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1">🔄 ETL/Mapping</button>
               </div>
             )}
           </div>
@@ -643,6 +790,14 @@ function App() {
           activeConfig={activeConfig}
           onCancel={() => setShowImportDbModal(false)}
           onSuccess={() => handleDbChange(activeConnectionId, activeDatabase)}
+        />
+      )}
+
+      {showMigrationModal && (
+        <DataMigrationForm
+          connections={connections}
+          onCancel={() => setShowMigrationModal(false)}
+          onSuccess={(msg) => { alert(msg); refreshTableData(); }}
         />
       )}
     </div>

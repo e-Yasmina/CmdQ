@@ -34,6 +34,17 @@ export const apiService = {
         return data;
     },
 
+    dropDatabase: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/drop_database`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to drop database");
+        return data;
+    },
+
     fetchSchema: async (payload) => {
         const res = await fetch(`${API_BASE_URL}/schema`, {
             method: "POST",
@@ -70,7 +81,13 @@ export const apiService = {
             body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Execution failed");
+        if (!res.ok) {
+            let errMsg = data.detail || "Execution failed";
+            if (typeof errMsg === "object") {
+                errMsg = JSON.stringify(errMsg);
+            }
+            throw new Error(errMsg);
+        }
         return data;
     },
 
@@ -183,6 +200,17 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to import database");
+        return data;
+    },
+
+    migrateData: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/etl/migrate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to migrate data");
         return data;
     }
 };
