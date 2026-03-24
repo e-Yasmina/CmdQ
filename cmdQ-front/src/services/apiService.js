@@ -74,11 +74,12 @@ export const apiService = {
         return data;
     },
 
-    launchAiPrompt: async (payload) => {
+    launchAiPrompt: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/ai/prompt`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: signal
         });
         const data = await res.json();
         if (!res.ok) {
@@ -113,44 +114,48 @@ export const apiService = {
         return data;
     },
 
-    fetchSecurityAnalysis: async (payload) => {
+    fetchSecurityAnalysis: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/analyze/security`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: signal
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch security analysis");
         return data;
     },
 
-    fetchPerformanceAnalysis: async (payload) => {
+    fetchPerformanceAnalysis: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/analyze/performance`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: signal
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch performance analysis");
         return data;
     },
 
-    fetchDataAnalysis: async (payload) => {
+    fetchDataAnalysis: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/analyze/data`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: signal
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch data analysis");
         return data;
     },
 
-    fetchSummaryAnalysis: async (payload) => {
+    fetchSummaryAnalysis: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/analyze/summary`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: signal
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch summary analysis");
