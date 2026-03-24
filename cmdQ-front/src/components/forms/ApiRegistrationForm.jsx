@@ -75,7 +75,7 @@ export default function ApiRegistrationForm({ onRegistered, onCancel }) {
                     <label className="text-xs text-gray-400 uppercase">Model</label>
                     <input
                         type="text" name="model" value={apiFormData.model} onChange={handleApiFormChange}
-                        placeholder="e.g. gpt-4o or gemini-1.5-pro"
+                        placeholder="e.g. gpt-4o or gemini-2.5-pro"
                         className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none text-sm"
                     />
                 </div>

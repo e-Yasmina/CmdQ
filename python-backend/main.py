@@ -42,7 +42,7 @@ class AIPrompt(BaseModel):
     prompt: str
     command: str
     db_config: ConnectionDetails
-    schema_json: Dict[str, Any]
+    schema_data: Dict[str, Any]
     chat_history: List[ChatMessage] = []
 
 class SecurityAnalysisRequest(BaseModel):
@@ -335,9 +335,23 @@ async def get_table_data(req: TableDataRequest):
         return {"status": "error", "message": f"Failed to fetch table data: {str(e)}"}
 
 import shutil
+import json
+import os
 
-registered_api_models = []
+MODELS_FILE = "registered_models.json"
 
+def get_registered_models():
+    if os.path.exists(MODELS_FILE):
+        try:
+            with open(MODELS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return []
+
+def save_registered_models(models):
+    with open(MODELS_FILE, "w", encoding="utf-8") as f:
+        json.dump(models, f, indent=4)
 @app.get("/ai/detect_cli")
 async def detect_cli():
     """Detects installed AI CLI tools in the environment."""
@@ -354,7 +368,7 @@ async def detect_cli():
             available_clis.append({"command": cmd, "name": name, "installed": True})
             
     # Add newly registered API CLIs
-    for model in registered_api_models:
+    for model in get_registered_models():
         available_clis.append({
             "command": model["id"],
             "name": f"{model['name']} (API)",
@@ -377,12 +391,15 @@ class RegisterAPIModel(BaseModel):
 
 @app.post("/ai/register_api_model")
 async def register_api_model(m: RegisterAPIModel):
-    for existing in registered_api_models:
+    models = get_registered_models()
+    for existing in models:
         if existing["id"] == m.id:
             existing.update(m.dict())
+            save_registered_models(models)
             return {"status": "success", "message": "Updated registered API Model."}
             
-    registered_api_models.append(m.dict())
+    models.append(m.dict())
+    save_registered_models(models)
     return {"status": "success", "message": "Registered new API Model."}
 
 
@@ -511,7 +528,8 @@ async def analyze_security(req: SecurityAnalysisRequest):
         
         try:
             cmd_to_run = req.command
-            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            models = get_registered_models()
+            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
             output = ""
             
             if selected_api_model:
@@ -697,7 +715,8 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
         
         try:
             cmd_to_run = req.command
-            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            models = get_registered_models()
+            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
             output = ""
             
             if selected_api_model:
@@ -861,7 +880,8 @@ async def analyze_data(req: DataAnalysisRequest):
         
         try:
             cmd_to_run = req.command
-            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            models = get_registered_models()
+            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
             output = ""
             
             if selected_api_model:
@@ -1006,7 +1026,8 @@ async def analyze_summary(req: SummaryAnalysisRequest):
         
         try:
             cmd_to_run = req.command
-            selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+            models = get_registered_models()
+            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
             output = ""
             
             if selected_api_model:
@@ -1072,8 +1093,8 @@ async def ai_prompt(payload: AIPrompt):
         env["DATABASE_URL"] = db_url
 
         schema_metadata = []
-        if isinstance(payload.schema_json, dict):
-            for s_name, tables in payload.schema_json.items():
+        if isinstance(payload.schema_data, dict):
+            for s_name, tables in payload.schema_data.items():
                 if isinstance(tables, dict):
                     schema_metadata.append(f"Schema '{s_name}' contains exactly {len(tables)} tables.")
         metadata_str = " ".join(schema_metadata)
@@ -1083,15 +1104,17 @@ async def ai_prompt(payload: AIPrompt):
             history_str = "Previous Conversation History:\n" + "\n".join([f"{msg.role}: {msg.content}" for msg in payload.chat_history]) + "\n\n"
 
         base_prompt = (
-            f"You are an AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
+            f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
             f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
             f"Given this database schema:\n"
             f"{metadata_str}\n"
-            f"Schema JSON: {json.dumps(payload.schema_json)}\n\n"
+            f"Schema JSON: {json.dumps(payload.schema_data)}\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "
-            f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block."
+            f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block.\n"
+            f"IMPORTANT: If you encounter an error (like a check constraint violation) and need to run a diagnostic SELECT query to investigate the schema structure before solving the user's request, "
+            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute the query and automatically feed you the results so you can continue your task!"
         )
 
         cmd_to_run = payload.command
@@ -1101,13 +1124,14 @@ async def ai_prompt(payload: AIPrompt):
         # This completely bypasses Windows CMD's 8191 character argument limit.
         import tempfile
         
-        MAX_RETRIES = 3
+        MAX_RETRIES = 8
         current_prompt = base_prompt
         output = ""
         error_output = ""
         extracted_sql = None
         execution_results = []
-        selected_api_model = next((m for m in registered_api_models if m["id"] == cmd_to_run), None)
+        models = get_registered_models()
+        selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
         
         for attempt in range(MAX_RETRIES):
             if selected_api_model:
@@ -1183,12 +1207,14 @@ async def ai_prompt(payload: AIPrompt):
             
             if not output and error_output:
                 if attempt == MAX_RETRIES - 1:
-                    return {"status": "error", "message": f"CLI Error: {error_output}"}
+                    return {"status": "error", "message": f"CLI/API Error on attempt {attempt}: {error_output}"}
                 else:
-                    break
+                    import time
+                    time.sleep(1) # Small delay before retry
+                    continue
                 
             if not output:
-                 output = "No valid text output returned from CLI."
+                 output = "No valid text output returned from model or CLI."
                  
             # Extract SQL and execute it
             sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
@@ -1235,43 +1261,66 @@ async def ai_prompt(payload: AIPrompt):
                     current_db = "postgres"
                     
                 try:
+                    # Check if script contains CREATE DATABASE or context switches
+                    requires_autocommit = False
                     for item in parsed_statements:
-                        stmt = item["stmt"]
-                        force_db = item["switch_db"]
+                        if re.search(r'CREATE\s+DATABASE', item["stmt"], re.IGNORECASE) or item["switch_db"]:
+                            requires_autocommit = True
+                            break
+                            
+                    if cfg.db_type == "postgres":
+                        base_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
+                    else:
+                        base_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
+
+                    current_db = cfg.database if cfg.database else "postgres"
+                    
+                    if not requires_autocommit:
+                        # Transactional execution for clean rollbacks upon failure
+                        engine = create_engine(base_url + current_db)
+                        with engine.begin() as conn:
+                            for item in parsed_statements:
+                                stmt = item["stmt"]
+                                if not stmt: continue
+                                result_proxy = conn.execute(text(stmt))
+                                if result_proxy.returns_rows:
+                                    rows = result_proxy.fetchall()
+                                    keys = result_proxy.keys()
+                                    execution_results = [dict(zip(keys, row)) for row in rows]
+                    else:
+                        # Fallback for meta commands that require autocommit
+                        for item in parsed_statements:
+                            stmt = item["stmt"]
+                            if item["switch_db"]:
+                                current_db = item["switch_db"]
+                            
+                            new_db_name = None
+                            db_match = re.search(r'CREATE\s+DATABASE\s+([a-zA-Z0-9_]+)', stmt, re.IGNORECASE)
+                            if db_match:
+                                new_db_name = db_match.group(1).replace('"', '').replace("'", "").replace('`', '').strip()
+                                
+                            engine = create_engine(base_url + current_db, isolation_level="AUTOCOMMIT")
+                            with engine.connect() as conn:
+                                if stmt:
+                                    result_proxy = conn.execute(text(stmt))
+                                    if result_proxy.returns_rows:
+                                        rows = result_proxy.fetchall()
+                                        keys = result_proxy.keys()
+                                        execution_results = [dict(zip(keys, row)) for row in rows]
+                            
+                            if new_db_name:
+                                current_db = new_db_name
+                                
+                    is_investigate = "-- INVESTIGATE" in extracted_sql.upper()
+                    if is_investigate and attempt < MAX_RETRIES - 1:
+                        investigate_feedback = (
+                            f"\n\nThe diagnostic query you generated:\n```sql\n{extracted_sql}\n```\n"
+                            f"Executed successfully and returned these results:\n{json.dumps(execution_results, default=str)[:10000]}\n\n"
+                            f"Now, based on these results, please proceed with completing the user's task or run another investigate query if needed."
+                        )
+                        current_prompt += investigate_feedback
+                        continue # Feedback loops back to AI
                         
-                        # Apply explicit context switch BEFORE evaluating this statement block
-                        if force_db:
-                            current_db = force_db
-                            
-                        if not stmt:
-                            # Might just be a \c command block without actual sql code following
-                            continue
-                            
-                        new_db_name = None
-                        db_match = re.search(r'CREATE\s+DATABASE\s+([a-zA-Z0-9_]+)', stmt, re.IGNORECASE)
-                        if db_match:
-                            new_db_name = db_match.group(1).replace('"', '').replace("'", "").replace('`', '').strip()
-                            
-                        # Build context URL
-                        if cfg.db_type == "postgres":
-                            temp_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{current_db}"
-                        else:
-                            temp_part = f"/{current_db}" if current_db else ""
-                            temp_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}{temp_part}"
-                            
-                        # Connect and execute the single statement
-                        engine = create_engine(temp_url, isolation_level="AUTOCOMMIT")
-                        with engine.connect() as conn:
-                            result_proxy = conn.execute(text(stmt))
-                            if result_proxy.returns_rows:
-                                rows = result_proxy.fetchall()
-                                keys = result_proxy.keys()
-                                execution_results = [dict(zip(keys, row)) for row in rows]
-                        
-                        # If a DB was natively created, implicitly switch future statements into it
-                        if new_db_name:
-                            current_db = new_db_name
-                            
                     break # Execution successful, exit loop
                 except Exception as sql_err:
                     execution_results = [{"error": str(sql_err)}]
@@ -1287,6 +1336,9 @@ async def ai_prompt(payload: AIPrompt):
                     else:
                         break # Max retries reached
             else:
+                if attempt > 0 and attempt < MAX_RETRIES - 1:
+                    current_prompt += f"\n\nYou did not wrap your output in a valid ```sql ... ``` block! You must wrap your query in ```sql ... ```. Please try again."
+                    continue
                 break # No SQL to execute, break loop
                 
         return {

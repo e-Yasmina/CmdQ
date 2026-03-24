@@ -44,6 +44,7 @@ function App() {
   // View Mode: 'ai' | 'query'
   const [viewMode, setViewMode] = useState('ai');
   const [isQueryExecuting, setIsQueryExecuting] = useState(false);
+  const [currentAbortController, setCurrentAbortController] = useState(null);
 
   // DB Export/Import Modal State
   const [showExportDbModal, setShowExportDbModal] = useState(false);
@@ -301,6 +302,14 @@ function App() {
     }
   };
 
+  const stopAi = () => {
+    if (currentAbortController) {
+      currentAbortController.abort();
+      setCurrentAbortController(null);
+      setSqlResult(prev => ({ ...prev, loading: false }));
+    }
+  };
+
   const launchCli = async () => {
     try {
       const command = selectedCli === "custom" ? customCliCommand : selectedCli;
@@ -313,17 +322,19 @@ function App() {
         return;
       }
 
+      const controller = new AbortController();
+      setCurrentAbortController(controller);
       setSqlResult({ loading: true });
 
       const payload = {
         command: command,
         prompt: prompt,
         db_config: activeConfig,
-        schema_json: activeSchema || {},
+        schema_data: activeSchema || {},
         chat_history: chatHistory
       };
 
-      const data = await apiService.launchAiPrompt(payload);
+      const data = await apiService.launchAiPrompt(payload, controller.signal);
 
       setSqlResult(data);
       setChatHistory(prev => [
@@ -334,8 +345,14 @@ function App() {
       setPrompt("");
       console.log("Executed seamlessly:", data);
     } catch (err) {
-      console.error("CLI Execution Error:", err.message);
-      setSqlResult({ error: "Execution failed. Please check the console for more details." });
+      if (err.name === 'AbortError') {
+        setSqlResult({ error: "Operation stopped by user." });
+      } else {
+        console.error("CLI Execution Error:", err.message);
+        setSqlResult({ error: "Execution failed. Please check the console for more details." });
+      }
+    } finally {
+      setCurrentAbortController(null);
     }
   };
 
@@ -364,97 +381,60 @@ function App() {
     setSqlResult({ loading: true });
     setIsQueryExecuting(true);
 
-    if (type === 'security') {
-      try {
+    const controller = new AbortController();
+    setCurrentAbortController(controller);
+
+    try {
+      if (type === 'security') {
         const payload = {
           command: command || "",
           db_config: activeConfig,
           schema_name: activeSchemaName || "",
           table_name: activeTableName || ""
         };
-        const data = await apiService.fetchSecurityAnalysis(payload);
-        setSqlResult({
-          type: 'security_analysis',
-          ...data
-        });
-      } catch (err) {
-        console.error("Security Analysis Error:", err);
-        setSqlResult({ error: "Analysis failed: " + err.message });
-      } finally {
-        setIsQueryExecuting(false);
-      }
-      return;
-    }
-
-    if (type === 'performance') {
-      try {
+        const data = await apiService.fetchSecurityAnalysis(payload, controller.signal);
+        setSqlResult({ type: 'security_analysis', ...data });
+      } else if (type === 'performance') {
         const payload = {
           command: command || "",
           db_config: activeConfig,
           schema_name: activeSchemaName || "",
           table_name: activeTableName || ""
         };
-        const data = await apiService.fetchPerformanceAnalysis(payload);
-        setSqlResult({
-          type: 'performance_analysis',
-          ...data
-        });
-      } catch (err) {
-        console.error("Performance Analysis Error:", err);
-        setSqlResult({ error: "Analysis failed: " + err.message });
-      } finally {
-        setIsQueryExecuting(false);
-      }
-      return;
-    }
-
-    if (type === 'data') {
-      try {
+        const data = await apiService.fetchPerformanceAnalysis(payload, controller.signal);
+        setSqlResult({ type: 'performance_analysis', ...data });
+      } else if (type === 'data') {
         const payload = {
           command: command || "",
           db_config: activeConfig,
           schema_name: activeSchemaName || "",
           table_name: activeTableName || ""
         };
-        const data = await apiService.fetchDataAnalysis(payload);
-        setSqlResult({
-          type: 'data_analysis',
-          ...data
-        });
-      } catch (err) {
-        console.error("Data Analysis Error:", err);
-        setSqlResult({ error: "Analysis failed: " + err.message });
-      } finally {
-        setIsQueryExecuting(false);
-      }
-      return;
-    }
-
-    if (type === 'summary') {
-      try {
+        const data = await apiService.fetchDataAnalysis(payload, controller.signal);
+        setSqlResult({ type: 'data_analysis', ...data });
+      } else if (type === 'summary') {
         const payload = {
           command: command || "",
           db_config: activeConfig,
           schema_name: activeSchemaName || "",
           table_name: activeTableName || ""
         };
-        const data = await apiService.fetchSummaryAnalysis(payload);
-        setSqlResult({
-          type: 'summary_analysis',
-          ...data
-        });
-      } catch (err) {
-        console.error("Summary Analysis Error:", err);
-        setSqlResult({ error: "Analysis failed: " + err.message });
-      } finally {
-        setIsQueryExecuting(false);
+        const data = await apiService.fetchSummaryAnalysis(payload, controller.signal);
+        setSqlResult({ type: 'summary_analysis', ...data });
+      } else {
+        setSqlResult({ error: "Unknown analysis type" });
       }
-      return;
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        setSqlResult({ error: "Analysis stopped by user." });
+      } else {
+        console.error(`${type} Analysis Error:`, err);
+        setSqlResult({ error: "Analysis failed: " + err.message });
+      }
+    } finally {
+      setIsQueryExecuting(false);
+      setCurrentAbortController(null);
     }
-
-    setIsQueryExecuting(false);
-    setSqlResult({ error: "Unknown analysis type" });
-    return;
   };
 
   const renderMessageContent = (content) => {
@@ -659,14 +639,24 @@ function App() {
                 />
               )}
 
-              <button
-                onClick={launchCli}
-                disabled={!activeConfig}
-                title={activeConfig ? "Launch CLI locally" : "Connect to database first"}
-                className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
-              >
-                ▶
-              </button>
+              {currentAbortController ? (
+                <button
+                  onClick={stopAi}
+                  className="bg-red-500 hover:bg-red-600 text-white flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                  title="Stop Generation"
+                >
+                  ■
+                </button>
+              ) : (
+                <button
+                  onClick={launchCli}
+                  disabled={!activeConfig}
+                  title={activeConfig ? "Launch CLI locally" : "Connect to database first"}
+                  className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                >
+                  ▶
+                </button>
+              )}
               {chatHistory.length > 0 && (
                 <button
                   onClick={() => setChatHistory([])}
@@ -726,14 +716,67 @@ function App() {
                 {/* <span className="text-xs text-gray-500 self-center mr-2 uppercase font-bold tracking-wider">
                   Analyze {activeTableName ? 'Table' : 'Database'}:
                 </span> */}
-                <button onClick={() => launchAiAnalysis('security')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">🔒 Security</button>
-                <button onClick={() => launchAiAnalysis('performance')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">⚡ Performance</button>
-                <button onClick={() => launchAiAnalysis('data')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📊 Data Analysis</button>
-                <button onClick={() => launchAiAnalysis('summary')} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📝 Summary</button>
+                <button
+                  onClick={() => launchAiAnalysis('security')}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  🔒 Security
+                </button>
+                <button
+                  onClick={() => launchAiAnalysis('performance')}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  ⚡ Performance
+                </button>
+                <button
+                  onClick={() => launchAiAnalysis('data')}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  📊 Data Analysis
+                </button>
+                <button
+                  onClick={() => launchAiAnalysis('summary')}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  📝 Summary
+                </button>
+
+                {currentAbortController && (
+                  <button
+                    onClick={stopAi}
+                    className="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                    title="Stop AI Operation"
+                  >
+                    ■ STOP
+                  </button>
+                )}
+
                 <div className="h-4 w-px bg-border mx-1 self-center"></div>
-                <button onClick={() => setShowImportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📥 Import DB</button>
-                <button onClick={() => setShowExportDbModal(true)} className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1">📤 Export DB</button>
-                <button onClick={() => setShowMigrationModal(true)} className="bg-primary/20 border border-primary/50 text-primary hover:bg-primary hover:text-background px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1">🔄 ETL/Mapping</button>
+                <button
+                  onClick={() => setShowImportDbModal(true)}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  📥 Import DB
+                </button>
+                <button
+                  onClick={() => setShowExportDbModal(true)}
+                  disabled={!!currentAbortController}
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  📤 Export DB
+                </button>
+                <button
+                  onClick={() => setShowMigrationModal(true)}
+                  disabled={!!currentAbortController}
+                  className="bg-primary/20 border border-primary/50 text-primary hover:bg-primary hover:text-background px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                >
+                  🔄 ETL/Mapping
+                </button>
               </div>
             )}
           </div>
