@@ -1,0 +1,25 @@
+{
+  "name": "cmdq",
+  "version": "1.0.0",
+  "description": "This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/e-Yasmina/CmdQ.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/e-Yasmina/CmdQ/issues"
+  },
+  "homepage": "https://github.com/e-Yasmina/CmdQ#readme",
+  "devDependencies": {
+    "electron": "^41.1.0"
+  }
+}

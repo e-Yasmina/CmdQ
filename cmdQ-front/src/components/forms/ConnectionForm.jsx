@@ -8,7 +8,8 @@ export default function ConnectionForm({ onConnected, onCancel }) {
         port: 5432,
         user: "postgres",
         password: "",
-        database: ""
+        database: "",
+        server_name: ""
     });
     const [isLoading, setIsLoading] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
@@ -91,6 +92,14 @@ export default function ConnectionForm({ onConnected, onCancel }) {
 
                 {connStep === 1 && (
                     <>
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs text-gray-400 uppercase">Server Name (Custom Label)</label>
+                            <input
+                                type="text" name="server_name" value={dbConfig.server_name} onChange={handleConfigChange}
+                                placeholder="e.g. Production DB"
+                                className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none"
+                            />
+                        </div>
                         <div className="flex flex-col gap-1">
                             <label className="text-xs text-gray-400 uppercase">Database Type</label>
                             <select
