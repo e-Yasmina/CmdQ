@@ -4,7 +4,8 @@ export const PALETTE = {
     panel: '#161B22',
     border: '#30363D',
     // primary: '#00FF41',
-    primary: '#EF88AD',
+    // primary: '#EF88AD',
+    primary: '#FB923C',
     secondary: '#58A6FF',
     textPrimary: '#C9D1D9',
 

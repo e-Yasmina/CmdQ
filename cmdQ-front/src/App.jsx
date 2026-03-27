@@ -14,10 +14,14 @@ import DataAnalysisViewer from './components/DataAnalysisViewer';
 import SummaryAnalysisViewer from './components/SummaryAnalysisViewer';
 import DataMigrationForm from './components/forms/DataMigrationForm';
 import { apiService } from './services/apiService';
+import { storageService } from './services/storageService';
+import ServerContextMenu from './components/ServerContextMenu';
+import ServerActionModal from './components/ServerActionModal';
 
 function App() {
   const [prompt, setPrompt] = useState("");
   const [sqlResult, setSqlResult] = useState(null);
+  const [sqlQuery, setSqlQuery] = useState("");
 
   // New Connection State
   const [connections, setConnections] = useState([]); // Array of { id, config, databases, schemas: {} }
@@ -41,6 +45,11 @@ function App() {
   // API Model Registration State
   const [showApiModal, setShowApiModal] = useState(false);
 
+  // Persistence State
+  const [savedQueries, setSavedQueries] = useState([]);
+  const [savedConversations, setSavedConversations] = useState([]);
+  const [showSavedItems, setShowSavedItems] = useState(false);
+
   // View Mode: 'ai' | 'query'
   const [viewMode, setViewMode] = useState('ai');
   const [isQueryExecuting, setIsQueryExecuting] = useState(false);
@@ -55,6 +64,12 @@ function App() {
 
   // Create DB Modal State
   const [showCreateDbModal, setShowCreateDbModal] = useState(false);
+
+  // Context Menu State
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, server }
+  
+  // Server Action Modal State
+  const [serverActionModal, setServerActionModal] = useState(null); // { type, server }
 
   const fetchClis = () => {
     apiService.fetchClis()
@@ -74,7 +89,39 @@ function App() {
 
   useEffect(() => {
     fetchClis();
+    loadSavedConnections();
+    loadSavedQueries();
+    loadSavedConversations();
   }, []);
+
+  const loadSavedQueries = async () => {
+    try {
+      const saved = await storageService.getItems('queries');
+      setSavedQueries(saved || []);
+    } catch (err) {
+      console.error("Failed to load saved queries:", err);
+    }
+  };
+
+  const loadSavedConversations = async () => {
+    try {
+      const saved = await storageService.getItems('conversations');
+      setSavedConversations(saved || []);
+    } catch (err) {
+      console.error("Failed to load saved conversations:", err);
+    }
+  };
+
+  const loadSavedConnections = async () => {
+    try {
+      const saved = await storageService.getItems('connections');
+      if (saved && saved.length > 0) {
+        setConnections(saved);
+      }
+    } catch (err) {
+      console.error("Failed to load saved connections:", err);
+    }
+  };
 
   const fetchSchema = async (config) => {
     try {
@@ -87,7 +134,7 @@ function App() {
   };
 
   const handleConnected = async (dbs, initialDb, config) => {
-    const newConnId = `${config.user}@${config.host}:${config.port}`;
+    const newConnId = config.server_name || `${config.user}@${config.host}:${config.port}`;
 
     // Check if connection already exists
     let connExists = connections.find(c => c.id === newConnId);
@@ -105,6 +152,8 @@ function App() {
       };
 
       setConnections(prev => [...prev, newConnection]);
+      // Persist to disk
+      storageService.saveItem('connections', newConnection).catch(err => console.error("Failed to save connection:", err));
     }
 
     setActiveConnectionId(newConnId);
@@ -310,6 +359,50 @@ function App() {
     }
   };
 
+  const handleSaveQuery = async (queryText, name) => {
+    const newQuery = {
+      id: Date.now().toString(),
+      name: name,
+      query: queryText,
+      connectionId: activeConnectionId,
+      database: activeDatabase
+    };
+    try {
+      await storageService.saveItem('queries', newQuery);
+      setSavedQueries(prev => [...prev, newQuery]);
+    } catch (err) {
+      alert("Failed to save query: " + err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (chatHistory.length > 0) {
+      const saveConv = async () => {
+        const convId = activeConnectionId + "-" + activeDatabase;
+        const newConv = {
+          id: convId,
+          title: `Chat on ${activeDatabase} (${new Date().toLocaleString()})`,
+          history: chatHistory,
+          connectionId: activeConnectionId,
+          database: activeDatabase
+        };
+        try {
+          await storageService.saveItem('conversations', newConv);
+          setSavedConversations(prev => {
+            const exists = prev.find(c => c.id === convId);
+            if (exists) {
+              return prev.map(c => c.id === convId ? newConv : c);
+            }
+            return [...prev, newConv];
+          });
+        } catch (err) {
+          console.error("Failed to auto-save conversation:", err);
+        }
+      };
+      saveConv();
+    }
+  }, [chatHistory]);
+
   const launchCli = async () => {
     try {
       const command = selectedCli === "custom" ? customCliCommand : selectedCli;
@@ -437,6 +530,70 @@ function App() {
     }
   };
 
+  const handleServerContextMenu = (e, server) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      server: server
+    });
+  };
+
+  const handleServerAction = async (action, server) => {
+    switch (action) {
+      case 'rename':
+      case 'properties':
+      case 'backup':
+        setServerActionModal({ type: action, server: server });
+        break;
+      case 'disconnect':
+        if (window.confirm(`Disconnect from ${server.config.server_name || server.id}?`)) {
+          setConnections(prev => prev.filter(c => c.id !== server.id));
+          storageService.deleteItem('connections', server.id);
+          if (activeConnectionId === server.id) {
+            setActiveConnectionId(null);
+            setActiveDatabase(null);
+          }
+        }
+        break;
+      case 'refresh':
+      case 'reload':
+        handleRefreshConnection(server.id);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handleServerActionConfirm = async (data) => {
+    const { type, server } = serverActionModal;
+    
+    if (type === 'rename') {
+      const newName = data;
+      const updatedConn = { ...server, config: { ...server.config, server_name: newName } };
+      setConnections(prev => prev.map(c => c.id === server.id ? updatedConn : c));
+      storageService.saveItem('connections', updatedConn);
+    } else if (type === 'backup') {
+      const dbName = data;
+      try {
+        const blob = await apiService.exportDatabase({
+          db_config: { ...server.config, database: dbName },
+          format: 'sql'
+        });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `${dbName}_backup_${new Date().toISOString().split('T')[0]}.sql`);
+        document.body.appendChild(link);
+        link.click();
+        link.parentNode.removeChild(link);
+      } catch (err) {
+        alert("Backup failed: " + err.message);
+      }
+    }
+    setServerActionModal(null);
+  };
+
   const renderMessageContent = (content) => {
     const paragraphs = content.split('\n\n');
     const processParagraphs = [];
@@ -490,6 +647,7 @@ function App() {
         <ApiRegistrationForm onCancel={() => setShowApiModal(false)} onRegistered={handleApiRegistered} />
       )}
 
+
       {/* Left Sidebar (The Explorer) */}
       <aside className="w-64 bg-panel border-r border-border flex flex-col flex-shrink-0">
         <div className="p-4 border-b border-border flex flex-col gap-2">
@@ -508,9 +666,12 @@ function App() {
           ) : (
             connections.map(conn => (
               <div key={conn.id} className="mb-4">
-                <div className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between">
-                  <span>🖥️ {conn.id}</span>
-                  <div className="flex items-center gap-1">
+                <div 
+                  className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
+                  onContextMenu={(e) => handleServerContextMenu(e, conn)}
+                >
+                  <span className="truncate pr-4">🖥️ {conn.config.server_name || conn.id}</span>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -582,6 +743,85 @@ function App() {
             ))
           )}
         </ScrollArea>
+        <div className="p-4 border-t border-border bg-panel/50">
+          <button
+            onClick={() => setShowSavedItems(!showSavedItems)}
+            className="w-full text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-primary transition-colors flex items-center justify-between px-2 py-1 cursor-pointer"
+          >
+            <span>📁 Saved Items</span>
+            <span>{showSavedItems ? '▼' : '▶'}</span>
+          </button>
+          
+          {showSavedItems && (
+            <div className="mt-2 space-y-4">
+              {/* Saved Queries */}
+              <div>
+                <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Saved Queries</div>
+                <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
+                  {savedQueries.length === 0 ? (
+                    <div className="text-[10px] text-gray-600 italic px-4">No saved queries</div>
+                  ) : (
+                    savedQueries.map(q => (
+                      <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                        <span 
+                          className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                          title={q.query}
+                          onClick={() => {
+                            setSqlQuery(q.query);
+                            setActiveConnectionId(q.connectionId);
+                            setActiveDatabase(q.database);
+                            setViewMode('query');
+                          }}
+                        >
+                          📜 {q.name}
+                        </span>
+                        <button 
+                          onClick={() => storageService.deleteItem('queries', q.id).then(() => setSavedQueries(prev => prev.filter(x => x.id !== q.id)))}
+                          className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </ScrollArea>
+              </div>
+
+              {/* Saved Conversations */}
+              <div>
+                <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Conversations</div>
+                <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
+                  {savedConversations.length === 0 ? (
+                    <div className="text-[10px] text-gray-600 italic px-4">No saved chats</div>
+                  ) : (
+                    savedConversations.map(c => (
+                      <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                        <span 
+                          className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                          title={c.title}
+                          onClick={() => {
+                            setChatHistory(c.history);
+                            setActiveConnectionId(c.connectionId);
+                            setActiveDatabase(c.database);
+                            setViewMode('ai');
+                          }}
+                        >
+                          💬 {c.title}
+                        </span>
+                        <button 
+                          onClick={() => storageService.deleteItem('conversations', c.id).then(() => setSavedConversations(prev => prev.filter(x => x.id !== c.id)))}
+                          className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </ScrollArea>
+              </div>
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* Main Viewport */}
@@ -704,7 +944,13 @@ function App() {
 
         {viewMode === 'query' && (
           <div className="h-[30%] border-b border-border flex flex-col bg-panel flex-shrink-0 min-h-[150px]">
-            <QueryEditor onExecuteQuery={executeManualQuery} isLoading={isQueryExecuting} />
+            <QueryEditor 
+              value={sqlQuery} 
+              onChange={setSqlQuery} 
+              onExecuteQuery={executeManualQuery} 
+              onSaveQuery={handleSaveQuery} 
+              isLoading={isQueryExecuting} 
+            />
           </div>
         )}
 
@@ -841,6 +1087,25 @@ function App() {
           connections={connections}
           onCancel={() => setShowMigrationModal(false)}
           onSuccess={(msg) => { alert(msg); refreshTableData(); }}
+        />
+      )}
+
+      {contextMenu && (
+        <ServerContextMenu 
+          x={contextMenu.x} 
+          y={contextMenu.y} 
+          server={contextMenu.server} 
+          onClose={() => setContextMenu(null)} 
+          onAction={handleServerAction} 
+        />
+      )}
+
+      {serverActionModal && (
+        <ServerActionModal 
+          type={serverActionModal.type} 
+          server={serverActionModal.server} 
+          onClose={() => setServerActionModal(null)} 
+          onConfirm={handleServerActionConfirm} 
         />
       )}
     </div>
