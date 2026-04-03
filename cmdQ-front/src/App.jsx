@@ -64,10 +64,11 @@ function App() {
 
   // Create DB Modal State
   const [showCreateDbModal, setShowCreateDbModal] = useState(false);
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'error' | 'checking'
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState(null); // { x, y, server }
-  
+
   // Server Action Modal State
   const [serverActionModal, setServerActionModal] = useState(null); // { type, server }
 
@@ -88,10 +89,21 @@ function App() {
   };
 
   useEffect(() => {
-    fetchClis();
+    const checkBackend = () => {
+      fetchClis(); // This also checks connectivity implicitly
+      apiService.fetchClis()
+        .then(() => setBackendStatus('connected'))
+        .catch(() => setBackendStatus('error'));
+    };
+
+    checkBackend();
+    const interval = setInterval(checkBackend, 10000); // Check every 10s
+
     loadSavedConnections();
     loadSavedQueries();
     loadSavedConversations();
+
+    return () => clearInterval(interval);
   }, []);
 
   const loadSavedQueries = async () => {
@@ -403,6 +415,27 @@ function App() {
     }
   }, [chatHistory]);
 
+  const handleDebugLaunch = async () => {
+    console.log("DEBUG: handleDebugLaunch called. selectedCli:", selectedCli, "customCliCommand:", customCliCommand);
+    try {
+      const command = selectedCli === "custom" ? customCliCommand : selectedCli;
+      console.log("DEBUG: Resolved command to launch:", command);
+      if (!command) {
+        alert("Please enter a CLI command.");
+        return;
+      }
+      const data = await apiService.launchDebugCli({
+        command: command,
+        db_config: activeConfig
+      });
+      console.log("DEBUG: launchDebugCli response:", data);
+      alert(data.message);
+    } catch (err) {
+      console.error("DEBUG: launchDebugCli error:", err);
+      alert("Failed to launch debug terminal: " + err.message);
+    }
+  };
+
   const launchCli = async () => {
     try {
       const command = selectedCli === "custom" ? customCliCommand : selectedCli;
@@ -567,7 +600,7 @@ function App() {
 
   const handleServerActionConfirm = async (data) => {
     const { type, server } = serverActionModal;
-    
+
     if (type === 'rename') {
       const newName = data;
       const updatedConn = { ...server, config: { ...server.config, server_name: newName } };
@@ -666,7 +699,7 @@ function App() {
           ) : (
             connections.map(conn => (
               <div key={conn.id} className="mb-4">
-                <div 
+                <div
                   className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
                   onContextMenu={(e) => handleServerContextMenu(e, conn)}
                 >
@@ -751,7 +784,7 @@ function App() {
             <span>📁 Saved Items</span>
             <span>{showSavedItems ? '▼' : '▶'}</span>
           </button>
-          
+
           {showSavedItems && (
             <div className="mt-2 space-y-4">
               {/* Saved Queries */}
@@ -763,7 +796,7 @@ function App() {
                   ) : (
                     savedQueries.map(q => (
                       <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
-                        <span 
+                        <span
                           className="text-xs text-gray-400 truncate flex-1 hover:text-white"
                           title={q.query}
                           onClick={() => {
@@ -775,7 +808,7 @@ function App() {
                         >
                           📜 {q.name}
                         </span>
-                        <button 
+                        <button
                           onClick={() => storageService.deleteItem('queries', q.id).then(() => setSavedQueries(prev => prev.filter(x => x.id !== q.id)))}
                           className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
                         >
@@ -796,7 +829,7 @@ function App() {
                   ) : (
                     savedConversations.map(c => (
                       <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
-                        <span 
+                        <span
                           className="text-xs text-gray-400 truncate flex-1 hover:text-white"
                           title={c.title}
                           onClick={() => {
@@ -808,7 +841,7 @@ function App() {
                         >
                           💬 {c.title}
                         </span>
-                        <button 
+                        <button
                           onClick={() => storageService.deleteItem('conversations', c.id).then(() => setSavedConversations(prev => prev.filter(x => x.id !== c.id)))}
                           className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
                         >
@@ -891,12 +924,20 @@ function App() {
                 <button
                   onClick={launchCli}
                   disabled={!activeConfig}
-                  title={activeConfig ? "Launch CLI locally" : "Connect to database first"}
+                  title={activeConfig ? "Launch CLI locally" : "Choose a database first"}
                   className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
                 >
                   ▶
                 </button>
               )}
+              {/* <button
+                onClick={handleDebugLaunch}
+                disabled={!activeConfig}
+                title="Open visible debug terminal for this model"
+                className="bg-orange-500/20 text-orange-400 border border-orange-500/50 hover:bg-orange-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+              >
+                Debug Console
+              </button> */}
               {chatHistory.length > 0 && (
                 <button
                   onClick={() => setChatHistory([])}
@@ -925,8 +966,15 @@ function App() {
               ))}
             </ScrollArea>
 
-            <div className="flex items-center border-t border-border pt-2 flex-shrink-0">
-              <span className="text-primary font-bold mr-2">&gt;</span>
+            <div className="flex items-center border-t border-border pt-2 flex-shrink-0 relative">
+              {/* <div className="absolute -top-6 left-0 flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${backendStatus === 'connected' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`}></div>
+                <span className="text-[10px] uppercase font-bold tracking-tighter text-gray-500">
+                  Backend: {backendStatus === 'connected' ? 'Online' : 'Disconnected'} 
+                  {activeDatabase && ` | DB: ${activeDatabase}`}
+                </span>
+              </div>
+              <span className="text-primary font-bold mr-2">&gt;</span> */}
               <input
                 type="text"
                 value={prompt}
@@ -944,12 +992,12 @@ function App() {
 
         {viewMode === 'query' && (
           <div className="h-[30%] border-b border-border flex flex-col bg-panel flex-shrink-0 min-h-[150px]">
-            <QueryEditor 
-              value={sqlQuery} 
-              onChange={setSqlQuery} 
-              onExecuteQuery={executeManualQuery} 
-              onSaveQuery={handleSaveQuery} 
-              isLoading={isQueryExecuting} 
+            <QueryEditor
+              value={sqlQuery}
+              onChange={setSqlQuery}
+              onExecuteQuery={executeManualQuery}
+              onSaveQuery={handleSaveQuery}
+              isLoading={isQueryExecuting}
             />
           </div>
         )}
@@ -1091,21 +1139,21 @@ function App() {
       )}
 
       {contextMenu && (
-        <ServerContextMenu 
-          x={contextMenu.x} 
-          y={contextMenu.y} 
-          server={contextMenu.server} 
-          onClose={() => setContextMenu(null)} 
-          onAction={handleServerAction} 
+        <ServerContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          server={contextMenu.server}
+          onClose={() => setContextMenu(null)}
+          onAction={handleServerAction}
         />
       )}
 
       {serverActionModal && (
-        <ServerActionModal 
-          type={serverActionModal.type} 
-          server={serverActionModal.server} 
-          onClose={() => setServerActionModal(null)} 
-          onConfirm={handleServerActionConfirm} 
+        <ServerActionModal
+          type={serverActionModal.type}
+          server={serverActionModal.server}
+          onClose={() => setServerActionModal(null)}
+          onConfirm={handleServerActionConfirm}
         />
       )}
     </div>

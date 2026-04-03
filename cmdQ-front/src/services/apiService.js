@@ -217,5 +217,16 @@ export const apiService = {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to migrate data");
         return data;
+    },
+    
+    launchDebugCli: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/ai/launch_debug`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to launch debug terminal");
+        return data;
     }
 };

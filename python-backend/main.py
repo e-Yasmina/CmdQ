@@ -363,10 +363,25 @@ async def detect_cli():
         "chatgpt": "ChatGPT CLI"
     }
     
+    # Common npm/bin paths to check if shutils.which fails
+    extra_paths = [
+        os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm")
+    ]
+    
     available_clis = []
     for cmd, name in known_clis.items():
-        if shutil.which(cmd):
-            available_clis.append({"command": cmd, "name": name, "installed": True})
+        found_path = shutil.which(cmd)
+        
+        # If not in regular PATH, check common npm/global folders
+        if not found_path:
+            for p in extra_paths:
+                full_p = os.path.join(p, f"{cmd}.cmd")
+                if os.path.exists(full_p):
+                    found_path = full_p
+                    break
+        
+        if found_path:
+            available_clis.append({"command": found_path, "name": name, "installed": True})
             
     # Add newly registered API CLIs
     for model in get_registered_models():
@@ -408,6 +423,7 @@ import subprocess
 import os
 import urllib.parse
 import urllib.request
+from process_manager import manager as process_manager
 
 class CLILaunchDetails(BaseModel):
     command: str
@@ -417,6 +433,7 @@ class CLILaunchDetails(BaseModel):
 async def launch_cli(details: CLILaunchDetails):
     """Spawns the requested CLI in a new cmd window with DATABASE_URL injected."""
     try:
+        print(f"DEBUG: launch_cli/debug called for command: '{details.command}'")
         cfg = details.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
         safe_password = urllib.parse.quote_plus(cfg.password)
@@ -434,14 +451,33 @@ async def launch_cli(details: CLILaunchDetails):
         env["DB_PASS"] = cfg.password
         env["DB_NAME"] = cfg.database
         
-        # Start a new detached console window on Windows
         cmd_to_run = details.command
-        # start cmd /k launches it and keeps console open
-        subprocess.Popen(f'start cmd /k "{cmd_to_run}"', shell=True, env=env)
+        # When backend runs as child of Electron (windowless node.exe),
+        # Windows suppresses new console windows. We must use 
+        # CREATE_NEW_CONSOLE (0x10) + DETACHED_PROCESS (0x8) to force visibility.
+        # We also write a small .bat launcher to handle .cmd path resolution.
+        import tempfile
+        bat_content = f'@echo off\ntitle CmdQ Debug Console\n"{cmd_to_run}"\npause\n'
+        bat_file = os.path.join(tempfile.gettempdir(), "cmdq_debug_launch.bat")
+        with open(bat_file, "w") as f:
+            f.write(bat_content)
         
-        return {"status": "success", "message": f"Launched '{cmd_to_run}'"}
+        subprocess.Popen(
+            [bat_file],
+            env=env,
+            creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
+        
+        return {"status": "success", "message": f"Successfully spawned debug console for '{cmd_to_run}'"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to launch CLI: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Failed to launch debug terminal: {str(e)}")
+
+@app.post("/ai/launch_debug")
+async def launch_debug(details: CLILaunchDetails):
+    """Alias for launch_cli to explicitly help with debugging."""
+    return await launch_cli(details)
 
 import json
 import re
@@ -525,7 +561,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
     # Only invoke AI if command is provided
     if req.command:
         raw_json_metrics = json.dumps(metrics)
-        prompt_str = f"Analyze the following security metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Provide a brief, concise security risk assessment and simple recommendations if any. Use plain text or light markdown. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user."
+        prompt_str = f"Analyze the following security metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Provide a brief, concise security risk assessment and simple recommendations if any. Use plain text or light markdown. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
             cmd_to_run = req.command
@@ -562,16 +598,19 @@ async def analyze_security(req: SecurityAnalysisRequest):
                     elif provider == "anthropic":
                         output = res_data["content"][0]["text"]
             else:
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                    tf.write(prompt_str)
-                    temp_file_path = tf.name
-                try:
-                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
-                    output = proc.stdout.strip()
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                # One-shot CLI execution
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                else:
+                    import tempfile
+                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
+                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                    try: os.remove(pf)
+                    except: pass
                         
             ai_summary = output
         except Exception as e:
@@ -712,7 +751,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
     ai_summary = ""
     if req.command:
         raw_json_metrics = json.dumps(metrics)
-        prompt_str = f"Analyze these performance metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify bottlenecks based on cache hit ratio, index usage, active connections, or lock conflicts. Provide a brief actionable performance tuning assessment. Don't mention specific commands, just the tuning concept. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user."
+        prompt_str = f"Analyze these performance metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify bottlenecks based on cache hit ratio, index usage, active connections, or lock conflicts. Provide a brief actionable performance tuning assessment. Don't mention specific commands, just the tuning concept. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
             cmd_to_run = req.command
@@ -749,16 +788,19 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
                     elif provider == "anthropic":
                         output = res_data["content"][0]["text"]
             else:
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                    tf.write(prompt_str)
-                    temp_file_path = tf.name
-                try:
-                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
-                    output = proc.stdout.strip()
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                # One-shot CLI execution
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                else:
+                    import tempfile
+                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
+                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                    try: os.remove(pf)
+                    except: pass
                         
             ai_summary = output
         except Exception as e:
@@ -877,7 +919,7 @@ async def analyze_data(req: DataAnalysisRequest):
     ai_summary = ""
     if req.command:
         raw_json_metrics = json.dumps(metrics)
-        prompt_str = f"Analyze these data quality and volume metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify any notable data skew, missing values, fill rates, unique ratios, or table sizing insights. Provide a concise data assessment emphasizing structural characteristics or potential data quality red flags. Do not mention any of the files, backend code, or python files you might have read in your response. Just provide the insights directly to the user."
+        prompt_str = f"Analyze these data quality and volume metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify any notable data skew, missing values, fill rates, unique ratios, or table sizing insights. Provide a concise data assessment emphasizing structural characteristics or potential data quality red flags. Do not mention any of the files, backend code, or python files you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
             cmd_to_run = req.command
@@ -914,16 +956,19 @@ async def analyze_data(req: DataAnalysisRequest):
                     elif provider == "anthropic":
                         output = res_data["content"][0]["text"]
             else:
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                    tf.write(prompt_str)
-                    temp_file_path = tf.name
-                try:
-                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
-                    output = proc.stdout.strip()
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                # One-shot CLI execution
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                else:
+                    import tempfile
+                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
+                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                    try: os.remove(pf)
+                    except: pass
                         
             ai_summary = output
         except Exception as e:
@@ -1023,7 +1068,7 @@ async def analyze_summary(req: SummaryAnalysisRequest):
     ai_summary = ""
     if req.command:
         raw_json_metrics = json.dumps(metrics)
-        prompt_str = f"Provide a comprehensive summary about the {metrics['level']} '{metrics['target']}', based on these metrics: {raw_json_metrics}. Briefly describe its structure, schema complexity, or overall footprint. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the summary directly to the user."
+        prompt_str = f"Provide a comprehensive summary about the {metrics['level']} '{metrics['target']}', based on these metrics: {raw_json_metrics}. Briefly describe its structure, schema complexity, or overall footprint. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the summary directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
             cmd_to_run = req.command
@@ -1060,16 +1105,19 @@ async def analyze_summary(req: SummaryAnalysisRequest):
                     elif provider == "anthropic":
                         output = res_data["content"][0]["text"]
             else:
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                    tf.write(prompt_str)
-                    temp_file_path = tf.name
-                try:
-                    proc = subprocess.run(f'{cmd_to_run} < "{temp_file_path}"', shell=True, capture_output=True, text=True)
-                    output = proc.stdout.strip()
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                # One-shot CLI execution
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                else:
+                    import tempfile
+                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
+                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    output = result.stdout.strip()
+                    try: os.remove(pf)
+                    except: pass
                         
             ai_summary = output
         except Exception as e:
@@ -1104,18 +1152,24 @@ async def ai_prompt(payload: AIPrompt):
         if payload.chat_history:
             history_str = "Previous Conversation History:\n" + "\n".join([f"{msg.role}: {msg.content}" for msg in payload.chat_history]) + "\n\n"
 
+        # Truncate metadata if it's obscenely large to prevent stdin saturation
+        schema_json_str = json.dumps(payload.schema_data)
+        if len(schema_json_str) > 10000:
+            schema_json_str = schema_json_str[:10000] + "... [TRUNCATED]"
+
         base_prompt = (
             f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
             f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
             f"Given this database schema:\n"
             f"{metadata_str}\n"
-            f"Schema JSON: {json.dumps(payload.schema_data)}\n\n"
+            f"Schema JSON: {schema_json_str}\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "
             f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block.\n"
             f"IMPORTANT: If you encounter an error (like a check constraint violation) and need to run a diagnostic SELECT query to investigate the schema structure before solving the user's request, "
-            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute the query and automatically feed you the results so you can continue your task!"
+            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute the query and automatically feed you the results so you can continue your task!\n"
+            f"CRITICAL: When you are completely finished with your response, you MUST output the exact token: __CMDQ_DONE__"
         )
 
         cmd_to_run = payload.command
@@ -1125,16 +1179,21 @@ async def ai_prompt(payload: AIPrompt):
         # This completely bypasses Windows CMD's 8191 character argument limit.
         import tempfile
         
-        MAX_RETRIES = 8
+        MAX_RETRIES = 2
         current_prompt = base_prompt
         output = ""
         error_output = ""
         extracted_sql = None
         execution_results = []
         models = get_registered_models()
-        selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-        
+        # We bypass API matching if the command looks like an absolute path or a specific CLI binary
+        is_direct_cli = "\\" in cmd_to_run or "/" in cmd_to_run or cmd_to_run.endswith((".exe", ".cmd", ".bat", ".ps1"))
+        selected_api_model = None
+        if not is_direct_cli:
+            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
+            
         for attempt in range(MAX_RETRIES):
+            print(f"DEBUG: AI prompt attempt {attempt+1}/{MAX_RETRIES} using model/cmd: '{cmd_to_run}'")
             if selected_api_model:
                 try:
                     provider = selected_api_model["provider"]
@@ -1174,7 +1233,7 @@ async def ai_prompt(payload: AIPrompt):
                         raise ValueError(f"Unknown provider: {provider}")
 
                     req = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                    with urllib.request.urlopen(req) as response:
+                    with urllib.request.urlopen(req, timeout=60) as response:
                         res_data = json.loads(response.read().decode("utf-8"))
                         if provider in ["openai", "custom_openai"]:
                             output = res_data["choices"][0]["message"]["content"]
@@ -1189,22 +1248,82 @@ async def ai_prompt(payload: AIPrompt):
                         error_output += f" - {api_err.read().decode('utf-8')}"
                     output = ""
             else:
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-                    tf.write(current_prompt)
-                    temp_file_path = tf.name
-                    
+                # One-shot CLI execution.
+                # Gemini CLI requires -p/--prompt for non-interactive mode.
+                # Windows .CMD wrappers have an 8191 char limit, so we resolve
+                # them to the underlying Node.js script and call node directly.
+                import tempfile
+                
                 try:
-                    # Using < pipe feeds the contents seamlessly into any CLI that supports stdin.
-                    # E.g., `gemini < temp.txt` or `ollama run model < temp.txt`
-                    process = subprocess.run(
-                        f'{cmd_to_run} < "{temp_file_path}"', 
-                        env=env, capture_output=True, text=True, shell=True
-                    )
-                    output = process.stdout.strip()
-                    error_output = process.stderr.strip()
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
+                    cmd_lower = cmd_to_run.lower()
+                    if "gemini" in cmd_lower:
+                        # Resolve .CMD wrapper to underlying Node.js script
+                        node_script = None
+                        if cmd_to_run.lower().endswith((".cmd", ".bat")):
+                            try:
+                                with open(cmd_to_run, "r") as f:
+                                    cmd_content = f.read()
+                                # Look for: node "...node_modules\...\index.js" %*
+                                import re as re_mod
+                                match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
+                                if match:
+                                    raw = match.group(1)
+                                    # Replace %dp0% or %~dp0 or %dp0 with the directory of the .CMD file
+                                    cmd_dir = os.path.dirname(cmd_to_run)
+                                    node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
+                                    node_script = os.path.normpath(node_script)
+                            except:
+                                pass
+                        
+                        if node_script and os.path.exists(node_script):
+                            # Direct node invocation - NO command line length limit
+                            run_cmd = ["node", node_script, "-p", current_prompt]
+                            print(f"DEBUG: Gemini direct node: node {os.path.basename(node_script)} -p '<{len(current_prompt)} chars>'")
+                        else:
+                            # Fallback: use .CMD with truncated prompt
+                            truncated = current_prompt[:7000]
+                            run_cmd = [cmd_to_run, "-p", truncated]
+                            print(f"DEBUG: Gemini .CMD fallback (truncated to {len(truncated)} chars)")
+                        
+                        result = subprocess.run(
+                            run_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
+                            env=env
+                        )
+                        output = result.stdout.strip()
+                        error_output = result.stderr.strip() if result.stderr else ""
+                    else:
+                        # Generic CLI: try piping via stdin
+                        prompt_file = os.path.join(tempfile.gettempdir(), "cmdq_prompt.txt")
+                        with open(prompt_file, "w", encoding="utf-8") as pf:
+                            pf.write(current_prompt)
+                        print(f"DEBUG: Generic one-shot: type prompt | {cmd_to_run}")
+                        result = subprocess.run(
+                            f'type "{prompt_file}" | "{cmd_to_run}"',
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=120,
+                            env=env
+                        )
+                        output = result.stdout.strip()
+                        error_output = result.stderr.strip() if result.stderr else ""
+                        try: os.remove(prompt_file)
+                        except: pass
+                    
+                    print(f"DEBUG: CLI stdout ({len(output)} chars): {output[:200]}...")
+                    if error_output:
+                        print(f"DEBUG: CLI stderr: {error_output[:200]}...")
+                except subprocess.TimeoutExpired:
+                    output = ""
+                    error_output = "CLI process timed out after 120 seconds."
+                    print(f"DEBUG: CLI TIMEOUT")
+                except Exception as cli_err:
+                    output = ""
+                    error_output = str(cli_err)
+                    print(f"DEBUG: CLI ERROR: {cli_err}")
             
             if not output and error_output:
                 if attempt == MAX_RETRIES - 1:
@@ -1350,6 +1469,8 @@ async def ai_prompt(payload: AIPrompt):
         }
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"AI Prompt Execution Failed: {str(e)}")
 
 class ExportTableRequest(BaseModel):
