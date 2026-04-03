@@ -24,6 +24,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
+test_*.py
+diag_*.py
+probe_*.py
 env/
 build/
 develop-eggs/
@@ -50,6 +53,7 @@ venv.bak/
 .env
 
 # === Editor directories and files ===
+.agent/
 .vscode/*
 !.vscode/extensions.json
 .idea
