@@ -601,7 +601,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
                 if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=420)
                     output = result.stdout.strip()
                 else:
                     import tempfile
@@ -1125,6 +1125,101 @@ async def analyze_summary(req: SummaryAnalysisRequest):
             
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
 
+class TranslateRequest(BaseModel):
+    command: str
+    table_data: list
+
+@app.post("/ai/translate_table")
+def translate_table(req: TranslateRequest):
+    try:
+        raw_json_data = json.dumps(req.table_data)
+        prompt_str = f"You are a database localization tool. Translate the following JSON array of database rows into English (or the closest human-readable language if you can infer intent). Keep the exact same JSON structure (an array of objects). Translate the data values if they are text. If the keys (column headers) are in a foreign language, translate the keys to English too. Output ONLY valid JSON array of objects without any markdown blocks or backticks. JSON:\n{raw_json_data}\n\nVERY IMPORTANT: Output ONLY raw JSON, nothing else."
+        
+        cmd_to_run = req.command
+        models = get_registered_models()
+        selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
+        output = ""
+        
+        if selected_api_model:
+            provider = selected_api_model["provider"]
+            api_key = selected_api_model["api_key"]
+            model_name = selected_api_model["model"]
+            base_url = selected_api_model.get("base_url") or ""
+            
+            if provider in ["openai", "custom_openai"]:
+                url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
+            elif provider == "gemini":
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
+            elif provider == "anthropic":
+                url = "https://api.anthropic.com/v1/messages"
+                headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                payload_data = {"model": model_name, "max_tokens": 8192, "messages": [{"role": "user", "content": prompt_str}]}
+            
+            req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req_obj, timeout=180) as response:
+                res_data = json.loads(response.read().decode("utf-8"))
+                if provider in ["openai", "custom_openai"]:
+                    output = res_data["choices"][0]["message"]["content"]
+                elif provider == "gemini":
+                    output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                elif provider == "anthropic":
+                    output = res_data["content"][0]["text"]
+        else:
+            import tempfile
+            try:
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    node_script = None
+                    if cmd_to_run.lower().endswith((".cmd", ".bat")):
+                        try:
+                            with open(cmd_to_run, "r") as f:
+                                cmd_content = f.read()
+                            import re as re_mod
+                            match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
+                            if match:
+                                raw = match.group(1)
+                                cmd_dir = os.path.dirname(cmd_to_run)
+                                node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
+                                node_script = os.path.normpath(node_script)
+                        except:
+                            pass
+                    
+                    if node_script and os.path.exists(node_script):
+                        run_cmd = ["node", node_script, "-p", prompt_str]
+                    else:
+                        run_cmd = [cmd_to_run, "-p", prompt_str[:7000]]
+                        
+                    result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=180)
+                    output = result.stdout.strip()
+                else:
+                    pf = os.path.join(tempfile.gettempdir(), "cmdq_translate_prompt.txt")
+                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=180)
+                    output = result.stdout.strip()
+                    try: os.remove(pf)
+                    except: pass
+            except subprocess.TimeoutExpired:
+                raise Exception("CLI process timed out after 180 seconds")
+                    
+        import re
+        sql_match = re.search(r'```(?:json)?\s*(.*?)\s*```', output, re.IGNORECASE | re.DOTALL)
+        if sql_match:
+            output = sql_match.group(1).strip()
+        else:
+            start_idx = output.find('[')
+            end_idx = output.rfind(']')
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                output = output[start_idx:end_idx+1].strip()
+                
+        translated_data = json.loads(output)
+        return {"status": "success", "data": translated_data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Translation failed: {str(e)}")
+
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
     """Takes user's prompt + JSON schema, constructs context window, calls subprocess, extracts/runs SQL."""
@@ -1163,6 +1258,7 @@ async def ai_prompt(payload: AIPrompt):
             f"Given this database schema:\n"
             f"{metadata_str}\n"
             f"Schema JSON: {schema_json_str}\n\n"
+            f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "

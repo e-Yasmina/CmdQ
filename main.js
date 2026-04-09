@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 
@@ -95,6 +95,10 @@ function startFrontend() {
 }
 
 app.whenReady().then(() => {
+  ipcMain.on('open-new-window', () => {
+    createWindow();
+  });
+
   // Self-heal: kill anything on our ports before starting
   console.log("Pre-flight system check: Clearing ports...");
   killPort(8000); // Backend
