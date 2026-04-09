@@ -326,8 +326,12 @@ function App() {
       });
       setSqlResult({
         data: data.data,
+        original_data: JSON.parse(JSON.stringify(data.data)),
         extracted_sql: `SELECT * FROM ${schemaName}.${tableName} LIMIT 100`,
-        message: `Fetched 100 rows from ${tableName}`
+        message: `Fetched 100 rows from ${tableName}`,
+        isTableClick: true,
+        targetSchema: schemaName,
+        targetTable: tableName
       });
     } catch (err) {
       setSqlResult({ error: "Failed to fetch table data: " + err.message });
@@ -342,6 +346,20 @@ function App() {
     }
   };
 
+  const extractTableFromQuery = (query) => {
+    if (!query) return null;
+    const match = query.match(/from\s+([`"]?[a-zA-Z0-9_]+[`"]?(?:\.[`"]?[a-zA-Z0-9_]+[`"]?)?)/i);
+    if (match) {
+      const full = match[1].replace(/[`"]/g, '');
+      const parts = full.split('.');
+      if (parts.length === 2) {
+        return { schema: parts[0], table: parts[1] };
+      }
+      return { schema: activeConfig?.db_type === 'postgres' ? 'public' : activeDatabase, table: parts[0] };
+    }
+    return null;
+  };
+
   const executeManualQuery = async (queryText) => {
     if (!activeConfig || !queryText.trim()) return;
     setSqlResult({ loading: true });
@@ -351,10 +369,18 @@ function App() {
         query: queryText,
         db_config: activeConfig
       });
+      
+      const extracted = extractTableFromQuery(queryText);
+      const isSelect = queryText.toLowerCase().trim().startsWith('select');
+
       setSqlResult({
         data: data.data,
+        original_data: JSON.parse(JSON.stringify(data.data)),
         message: data.message,
-        extracted_sql: queryText
+        extracted_sql: queryText,
+        isTableClick: false,
+        targetSchema: (isSelect && extracted) ? extracted.schema : null,
+        targetTable: (isSelect && extracted) ? extracted.table : null
       });
     } catch (err) {
       setSqlResult({ error: err.message });
@@ -415,6 +441,36 @@ function App() {
     }
   }, [chatHistory]);
 
+  const handleTranslateView = async () => {
+    if (!sqlResult?.data || sqlResult.data.length === 0) {
+      alert("No data available to translate. Please run a query first.");
+      return;
+    }
+
+    const command = selectedCli === "custom" ? customCliCommand : selectedCli;
+    if (!command) {
+      alert("Please select or register an AI provider in the AI settings first.");
+      return;
+    }
+
+    setSqlResult(prev => ({ ...prev, loading: true, message: "Translating view via AI... this may take a moment depending on the result size." }));
+    try {
+      const translatedData = await apiService.translateTable({
+        command: command,
+        table_data: sqlResult.data
+      });
+      setSqlResult(prev => ({
+        ...prev,
+        original_data: prev.original_data || prev.data,
+        data: translatedData.data,
+        message: "Translation applied to view.",
+        loading: false
+      }));
+    } catch (err) {
+      setSqlResult(prev => ({ ...prev, loading: false, error: "Failed to translate: " + err.message }));
+    }
+  };
+
   const handleDebugLaunch = async () => {
     console.log("DEBUG: handleDebugLaunch called. selectedCli:", selectedCli, "customCliCommand:", customCliCommand);
     try {
@@ -461,6 +517,14 @@ function App() {
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
+
+      if (data.extracted_sql) {
+        const extracted = extractTableFromQuery(data.extracted_sql);
+        const isSelect = data.extracted_sql.toLowerCase().trim().startsWith('select');
+        data.isTableClick = false;
+        data.targetSchema = (isSelect && extracted) ? extracted.schema : null;
+        data.targetTable = (isSelect && extracted) ? extracted.table : null;
+      }
 
       setSqlResult(data);
       setChatHistory(prev => [
@@ -739,16 +803,32 @@ function App() {
                           <div className="flex items-center gap-2 truncate pr-2">
                             💾 <span className="truncate">{db}</span>
                           </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDropDatabase(conn.id, db);
-                            }}
-                            className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
-                            title="Delete Database"
-                          >
-                            🗑️
-                          </button>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.electronAPI && window.electronAPI.openNewWindow) {
+                                  window.electronAPI.openNewWindow();
+                                } else {
+                                  window.open(window.location.href, '_blank');
+                                }
+                              }}
+                              className="text-gray-500 hover:text-blue-400 transition-all font-bold px-1 rounded focus:outline-none"
+                              title="Open in New Window"
+                            >
+                              ⧉
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDropDatabase(conn.id, db);
+                              }}
+                              className="text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
+                              title="Delete Database"
+                            >
+                              🗑️
+                            </button>
+                          </div>
                         </div>
                         {isActive && (
                           <div className="ml-4 mt-2 mb-2">
@@ -1071,6 +1151,15 @@ function App() {
                 >
                   🔄 ETL/Mapping
                 </button>
+                <div className="h-4 w-px bg-border mx-1 self-center"></div>
+                <button
+                  onClick={handleTranslateView}
+                  disabled={!!currentAbortController || (!sqlResult?.data?.length)}
+                  className="bg-[#2a1b38] border border-[#d288ff]/50 text-[#e0a8ff] hover:bg-[#d288ff] hover:text-black px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                  title="Translate the current visible table data"
+                >
+                  🌐 Translate View
+                </button>
               </div>
             )}
           </div>
@@ -1089,9 +1178,52 @@ function App() {
                 <DataTable
                   result={sqlResult}
                   activeConfig={activeConfig}
-                  activeSchemaName={activeSchemaName}
-                  activeTableName={activeTableName}
-                  onRefresh={refreshTableData}
+                  activeSchemaName={sqlResult?.targetSchema || activeSchemaName}
+                  activeTableName={sqlResult?.targetTable || activeTableName}
+                  onRefresh={() => {
+                     if (sqlResult?.extracted_sql && !sqlResult?.isTableClick) {
+                         executeManualQuery(sqlResult.extracted_sql);
+                     } else {
+                         refreshTableData();
+                     }
+                  }}
+                  onLocalMutation={(type, payload) => {
+                     setSqlResult(prev => {
+                        if (!prev || !prev.data) return prev;
+                        const data = [...prev.data];
+                        let original_data = prev.original_data ? [...prev.original_data] : null;
+
+                        if (type === 'update') {
+                           data[payload.rowIndex] = { ...data[payload.rowIndex], [payload.updateKey]: payload.updateValue };
+                           if (original_data) {
+                               const transKeys = Object.keys(data[payload.rowIndex]);
+                               const origKeys = Object.keys(original_data[payload.rowIndex]);
+                               const keyIdx = transKeys.indexOf(payload.updateKey);
+                               const realKey = keyIdx !== -1 && origKeys[keyIdx] ? origKeys[keyIdx] : payload.updateKey;
+                               original_data[payload.rowIndex] = { ...original_data[payload.rowIndex], [realKey]: payload.updateValue };
+                           }
+                        } else if (type === 'delete') {
+                           const idx = data.indexOf(payload.row);
+                           if (idx > -1) {
+                               data.splice(idx, 1);
+                               if (original_data) original_data.splice(idx, 1);
+                           }
+                        } else if (type === 'insert') {
+                           data.unshift(payload.row);
+                           if (original_data) {
+                               const mockData = {};
+                               const origKeys = Object.keys(original_data[0] || {});
+                               const transKeys = Object.keys(payload.row);
+                               for(let i=0; i<transKeys.length; i++) {
+                                   let realKey = origKeys[i] ? origKeys[i] : transKeys[i];
+                                   mockData[realKey] = payload.row[transKeys[i]];
+                               }
+                               original_data.unshift(mockData);
+                           }
+                        }
+                        return { ...prev, data, original_data };
+                     });
+                  }}
                 />
               )}
             </ScrollArea>

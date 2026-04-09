@@ -4,7 +4,7 @@ import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
 
-export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh }) {
+export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh, onLocalMutation }) {
     const [editingCell, setEditingCell] = useState(null); // { rowIndex, key, value }
     const [addingRow, setAddingRow] = useState(null);
     const [isMutating, setIsMutating] = useState(false);
@@ -16,9 +16,9 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
 
     if (result?.loading) {
         return (
-            <div className="h-full flex flex-col items-center justify-center text-primary font-code text-sm animate-pulse p-8">
+            <div className="h-full flex flex-col items-center justify-center text-primary font-code text-sm animate-pulse p-8 text-center max-w-lg mx-auto">
                 <span className="text-3xl mb-4">⚙️</span>
-                Executing and fetching results...
+                {result.message || "Executing and fetching results..."}
             </div>
         );
     }
@@ -53,18 +53,35 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         try {
             setIsMutating(true);
             setMutationError("");
-            const whereClause = Object.entries(rowSelected)
+            
+            const origRow = result.original_data ? result.original_data[rowIndex] : rowSelected;
+            
+            let realUpdateKey = updateKey;
+            if (result.original_data) {
+                const translatedKeys = Object.keys(rowSelected);
+                const originalKeys = Object.keys(origRow);
+                const keyIdx = translatedKeys.indexOf(updateKey);
+                if (keyIdx !== -1 && originalKeys[keyIdx]) {
+                    realUpdateKey = originalKeys[keyIdx];
+                }
+            }
+
+            const whereClause = Object.entries(origRow)
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `UPDATE "${activeSchemaName}"."${activeTableName}" SET "${updateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
+            const query = `UPDATE "${activeSchemaName}"."${activeTableName}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
 
             await apiService.executeQuery({
                 query,
                 db_config: activeConfig
             });
 
-            onRefresh();
+            if (onLocalMutation) {
+                onLocalMutation('update', { rowIndex, updateKey, updateValue });
+            } else if (onRefresh) {
+                onRefresh();
+            }
             setEditingCell(null);
         } catch (err) {
             setMutationError(err.message || "Failed to update row");
@@ -74,12 +91,15 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         }
     };
 
-    const handleDelete = async (row) => {
+    const handleDelete = async (row, rowIndex) => {
         if (!window.confirm("Are you sure you want to delete this row?")) return;
         try {
             setIsMutating(true);
             setMutationError("");
-            const whereClause = Object.entries(row)
+            
+            const origRow = result.original_data && typeof rowIndex === 'number' ? result.original_data[rowIndex] : row;
+            
+            const whereClause = Object.entries(origRow)
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
@@ -90,7 +110,11 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 db_config: activeConfig
             });
 
-            onRefresh();
+            if (onLocalMutation) {
+                onLocalMutation('delete', { row });
+            } else if (onRefresh) {
+                onRefresh();
+            }
         } catch (err) {
             setMutationError(err.message || "Failed to delete row");
         } finally {
@@ -102,18 +126,31 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         try {
             setIsMutating(true);
             setMutationError("");
-            const keys = Object.keys(addingRow);
+            const origCols = result.original_data && result.original_data.length > 0 
+                ? Object.keys(result.original_data[0]) 
+                : null;
+                
+            let validColNamesList = [];
+            let validValuesList = [];
+            
+            const rowKeys = Object.keys(addingRow);
+            for (let i = 0; i < rowKeys.length; i++) {
+                const k = rowKeys[i];
+                if (addingRow[k] !== "") {
+                    const realKey = origCols && origCols[i] ? origCols[i] : k;
+                    validColNamesList.push(`"${realKey}"`);
+                    validValuesList.push(formatSqlValue(addingRow[k]));
+                }
+            }
 
-            const validKeys = keys.filter(k => addingRow[k] !== "");
-
-            if (validKeys.length === 0) {
+            if (validColNamesList.length === 0) {
                 setMutationError("Cannot insert completely empty row");
                 setIsMutating(false);
                 return;
             }
 
-            const validColNames = validKeys.map(k => `"${k}"`).join(', ');
-            const validValues = validKeys.map(k => formatSqlValue(addingRow[k])).join(', ');
+            const validColNames = validColNamesList.join(', ');
+            const validValues = validValuesList.join(', ');
 
             const query = `INSERT INTO "${activeSchemaName}"."${activeTableName}" (${validColNames}) VALUES (${validValues})`;
 
@@ -122,7 +159,11 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 db_config: activeConfig
             });
 
-            onRefresh();
+            if (onLocalMutation) {
+                onLocalMutation('insert', { row: addingRow });
+            } else if (onRefresh) {
+                onRefresh();
+            }
             setAddingRow(null);
         } catch (err) {
             setMutationError(err.message || "Failed to insert row");
@@ -137,6 +178,15 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         const cols = Object.keys(result.data[0]);
         cols.forEach(c => newRow[c] = "");
         setAddingRow(newRow);
+    };
+
+    const isColorString = (val) => {
+        if (typeof val !== 'string') return false;
+        const str = val.trim().toLowerCase();
+        const hexRegex = /^#([a-f0-9]{3}|[a-f0-9]{4}|[a-f0-9]{6}|[a-f0-9]{8})$/;
+        const rgbRegex = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*[\d.]+)?\s*\)$/;
+        const hslRegex = /^hsla?\(\s*\d{1,3}\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*[\d.]+)?\s*\)$/;
+        return hexRegex.test(str) || rgbRegex.test(str) || hslRegex.test(str);
     };
 
     const renderCell = (row, i, k, val) => {
@@ -161,13 +211,31 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 />
             );
         }
+
+        let content;
+        if (val === null) {
+            content = <span className="opacity-50 italic">NULL</span>;
+        } else if (isColorString(val)) {
+            content = (
+                <div className="flex items-center gap-2">
+                    <div 
+                        className="w-3.5 h-3.5 rounded-sm shadow-sm ring-1 ring-white/20 shrink-0" 
+                        style={{ backgroundColor: val }}
+                    />
+                    <span className="truncate">{String(val)}</span>
+                </div>
+            );
+        } else {
+            content = String(val);
+        }
+
         return (
             <div
                 className={`truncate w-full h-full p-1 ${canMutate ? 'cursor-pointer hover:bg-white/10' : ''} rounded`}
                 onDoubleClick={() => canMutate && setEditingCell({ rowIndex: i, key: k, value: val })}
                 title={val === null ? "NULL" : String(val)}
             >
-                {val === null ? <span className="opacity-50 italic">NULL</span> : String(val)}
+                {content}
             </div>
         );
     };
@@ -204,7 +272,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                                         {canMutate && (
                                             <td className="p-2 border-r border-border/50 text-center select-none">
                                                 <button
-                                                    onClick={() => handleDelete(row)}
+                                                    onClick={() => handleDelete(row, i)}
                                                     className="text-red-400 hover:text-red-300 transition-colors p-1"
                                                     title="Delete Row"
                                                     disabled={isMutating}
