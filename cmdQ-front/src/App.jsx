@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ScrollArea from './components/ScrollArea';
 import SchemaAccordion from './components/SchemaAccordion';
 import ConnectionForm from './components/forms/ConnectionForm';
@@ -30,6 +30,22 @@ function App() {
   const [activeSchemaName, setActiveSchemaName] = useState(null);
   const [activeTableName, setActiveTableName] = useState(null);
   const [showConnectionForm, setShowConnectionForm] = useState(false);
+
+  const [openTabs, setOpenTabs] = useState([]);
+  const [activeTabId, setActiveTabId] = useState(null);
+  const tabStateCache = useRef({});
+
+  const closeTab = (tabId) => {
+    setOpenTabs(prev => prev.filter(id => id !== tabId));
+    delete tabStateCache.current[tabId];
+    if (`${activeConnectionId}::${activeDatabase}` === tabId) {
+      setActiveConnectionId(null);
+      setActiveDatabase(null);
+      setSqlResult(null);
+      setChatHistory([]);
+      setActiveTabId(null);
+    }
+  };
 
   // Derived state
   const activeConn = connections.find(c => c.id === activeConnectionId);
@@ -216,10 +232,32 @@ function App() {
   };
 
   const handleDbChange = async (connId, dbName) => {
+    const nextTabId = `${connId}::${dbName}`;
+    const prevTabId = activeConnectionId && activeDatabase ? `${activeConnectionId}::${activeDatabase}` : null;
+    
+    // Save current active state before switching
+    if (prevTabId) {
+      tabStateCache.current[prevTabId] = {
+        chatHistory, sqlResult, sqlQuery, prompt, viewMode, activeSchemaName, activeTableName
+      };
+    }
+
+    const cached = tabStateCache.current[nextTabId] || {
+        chatHistory: [], sqlResult: null, sqlQuery: "", prompt: "", viewMode: "ai", activeSchemaName: null, activeTableName: null
+    };
+
     setActiveConnectionId(connId);
     setActiveDatabase(dbName);
-    setActiveSchemaName(null);
-    setActiveTableName(null);
+    setActiveSchemaName(cached.activeSchemaName);
+    setActiveTableName(cached.activeTableName);
+    setChatHistory(cached.chatHistory);
+    setSqlResult(cached.sqlResult);
+    setSqlQuery(cached.sqlQuery);
+    setPrompt(cached.prompt);
+    setViewMode(cached.viewMode);
+
+    setOpenTabs(prev => prev.includes(nextTabId) ? prev : [...prev, nextTabId]);
+    setActiveTabId(nextTabId);
 
     const connIndex = connections.findIndex(c => c.id === connId);
     if (connIndex >= 0) {
@@ -241,9 +279,6 @@ function App() {
         });
       }
     }
-
-    setChatHistory([]);
-    setSqlResult(null);
   };
 
   const handleCreateDatabaseSuccess = (newDbName) => {
@@ -807,20 +842,6 @@ function App() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (window.electronAPI && window.electronAPI.openNewWindow) {
-                                  window.electronAPI.openNewWindow();
-                                } else {
-                                  window.open(window.location.href, '_blank');
-                                }
-                              }}
-                              className="text-gray-500 hover:text-blue-400 transition-all font-bold px-1 rounded focus:outline-none"
-                              title="Open in New Window"
-                            >
-                              ⧉
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
                                 handleDropDatabase(conn.id, db);
                               }}
                               className="text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
@@ -941,7 +962,28 @@ function App() {
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
 
         {/* Main Header / View Toggle */}
-        <div className="border-b border-border bg-panel p-4 flex justify-between items-center">
+        <div className="border-b border-border bg-panel flex flex-col justify-between items-start">
+           {/* Tab Bar */}
+           <div className="flex w-full bg-background/50 border-b border-border overflow-x-auto min-h-[36px] no-scrollbar">
+               {openTabs.length === 0 && (
+                   <div className="px-4 py-2 text-xs font-bold text-gray-500 italic">No workspace open. Select a database from the explorer.</div>
+               )}
+               {openTabs.map(tabId => {
+                  const [tConn, tDb] = tabId.split('::');
+                  return (
+                     <div 
+                        key={tabId} 
+                        onClick={() => handleDbChange(tConn, tDb)}
+                        className={`px-4 py-2 text-xs font-bold border-r border-border cursor-pointer flex items-center gap-2 transition-colors ${activeTabId === tabId ? 'bg-panel text-primary border-t-2 border-t-primary' : 'hover:bg-panel text-gray-500 hover:text-gray-300'}`}
+                     >
+                        💾 {tDb} <span className="text-[10px] opacity-40 font-normal truncate max-w-[100px]">{tConn}</span>
+                        <div onClick={(e) => { e.stopPropagation(); closeTab(tabId); }} className="hover:text-red-400 ml-2 rounded p-[1px] hover:bg-white/10 text-gray-400 leading-none">✕</div>
+                     </div>
+                  )
+               })}
+           </div>
+
+          <div className="flex justify-between items-center w-full p-2 px-4 shadow-[0_4px_10px_rgba(0,0,0,0.1)] z-10">
           <div className="flex items-center gap-4">
             <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
             <div className="flex bg-background border border-border rounded p-1">
@@ -1029,6 +1071,7 @@ function App() {
               )}
             </div>
           )}
+          </div>
         </div>
 
         {viewMode === 'ai' && (
