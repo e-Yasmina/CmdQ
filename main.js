@@ -40,7 +40,11 @@ function createWindow() {
     },
     title: "CmdQ Desktop",
     backgroundColor: '#0f172a', // Matching current theme
+    autoHideMenuBar: true
   });
+  
+  // also setting menu to null to free up space entirely
+  mainWindow.setMenu(null);
 
   // In development, load the Vite dev server
   // In production, we'd load the build/index.html
