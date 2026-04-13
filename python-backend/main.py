@@ -45,6 +45,7 @@ class AIPrompt(BaseModel):
     db_config: ConnectionDetails
     schema_data: Dict[str, Any]
     chat_history: List[ChatMessage] = []
+    protected_items: List[str] = []
 
 class SecurityAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -1251,6 +1252,11 @@ async def ai_prompt(payload: AIPrompt):
         schema_json_str = json.dumps(payload.schema_data)
         if len(schema_json_str) > 10000:
             schema_json_str = schema_json_str[:10000] + "... [TRUNCATED]"
+            
+        protection_instruction = ""
+        if payload.protected_items:
+            prot_list = ", ".join([f"'{p.split('::')[-1]}'" for p in payload.protected_items])
+            protection_instruction = f"URGENT ABSOLUTE RULE: The following databases, schemas, or tables are PROTECTED and strictly forbidden to be accessed or modified: {prot_list}. You MUST NEVER generate queries targeting them.\n\n"
 
         base_prompt = (
             f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
@@ -1258,6 +1264,7 @@ async def ai_prompt(payload: AIPrompt):
             f"Given this database schema:\n"
             f"{metadata_str}\n"
             f"Schema JSON: {schema_json_str}\n\n"
+            f"{protection_instruction}"
             f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
@@ -1443,6 +1450,19 @@ async def ai_prompt(payload: AIPrompt):
                 is_unsafe = any(kw in upper_sql for kw in ["DROP ", "ALTER ", "TRUNCATE "])
                 if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
                     execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands (DROP, ALTER, TRUNCATE, or DELETE without WHERE) are not allowed to be executed automatically."}]
+                    break
+                    
+                # Protection enforcement
+                is_protected_breach = False
+                for p in payload.protected_items:
+                    p_bare = p.split('::')[-1] # extract the bare table/schema/db name
+                    # Very strict check: if the name is mentioned ANYWHERE in the SQL
+                    if p_bare.lower() in extracted_sql.lower():
+                        is_protected_breach = True
+                        break
+                        
+                if is_protected_breach:
+                    execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Cannot execute query. One or more targets are protected from AI operations."}]
                     break
                     
                 # Open direct session using the injected credentials

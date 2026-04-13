@@ -15,7 +15,7 @@ import SummaryAnalysisViewer from './components/SummaryAnalysisViewer';
 import DataMigrationForm from './components/forms/DataMigrationForm';
 import { apiService } from './services/apiService';
 import { storageService } from './services/storageService';
-import ServerContextMenu from './components/ServerContextMenu';
+import ExplorerContextMenu from './components/ExplorerContextMenu';
 import ServerActionModal from './components/ServerActionModal';
 
 function App() {
@@ -65,6 +65,7 @@ function App() {
   const [savedQueries, setSavedQueries] = useState([]);
   const [savedConversations, setSavedConversations] = useState([]);
   const [showSavedItems, setShowSavedItems] = useState(false);
+  const [protectedItems, setProtectedItems] = useState([]);
 
   // View Mode: 'ai' | 'query'
   const [viewMode, setViewMode] = useState('ai');
@@ -118,9 +119,19 @@ function App() {
     loadSavedConnections();
     loadSavedQueries();
     loadSavedConversations();
+    loadProtectedItems();
 
     return () => clearInterval(interval);
   }, []);
+
+  const loadProtectedItems = () => {
+    try {
+      const saved = localStorage.getItem('cmdq_protected_items');
+      if (saved) setProtectedItems(JSON.parse(saved) || []);
+    } catch (err) {
+      console.error("Failed to load protected items:", err);
+    }
+  };
 
   const loadSavedQueries = async () => {
     try {
@@ -548,7 +559,8 @@ function App() {
         prompt: prompt,
         db_config: activeConfig,
         schema_data: activeSchema || {},
-        chat_history: chatHistory
+        chat_history: chatHistory,
+        protected_items: protectedItems
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
@@ -662,38 +674,69 @@ function App() {
     }
   };
 
-  const handleServerContextMenu = (e, server) => {
+  const handleExplorerContextMenu = (e, entity) => {
     e.preventDefault();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
-      server: server
+      entity: entity
     });
   };
 
-  const handleServerAction = async (action, server) => {
-    switch (action) {
-      case 'rename':
-      case 'properties':
-      case 'backup':
-        setServerActionModal({ type: action, server: server });
-        break;
-      case 'disconnect':
-        if (window.confirm(`Disconnect from ${server.config.server_name || server.id}?`)) {
-          setConnections(prev => prev.filter(c => c.id !== server.id));
-          storageService.deleteItem('connections', server.id);
-          if (activeConnectionId === server.id) {
-            setActiveConnectionId(null);
-            setActiveDatabase(null);
-          }
+  const handleExplorerAction = async (action, entity) => {
+    if (action === 'toggle_protect') {
+        const idMap = {
+           'server': entity.server?.id,
+           'database': `${entity.server?.id}::${entity.database}`,
+           'schema': `${entity.server?.id}::${entity.database}::${entity.schemaName}`,
+           'table': `${entity.server?.id}::${entity.database}::${entity.schemaName}::${entity.tableName}`
+        };
+        const id = idMap[entity.type];
+        if (id) {
+            const newProtected = protectedItems.includes(id) 
+               ? protectedItems.filter(p => p !== id) 
+               : [...protectedItems, id];
+            setProtectedItems(newProtected);
+            localStorage.setItem('cmdq_protected_items', JSON.stringify(newProtected));
         }
-        break;
-      case 'refresh':
-      case 'reload':
-        handleRefreshConnection(server.id);
-        break;
-      default:
-        break;
+        return;
+    }
+
+    if (entity.type === 'server') {
+        const server = entity.server;
+        switch (action) {
+          case 'rename':
+          case 'properties':
+          case 'backup':
+            setServerActionModal({ type: action, server: server });
+            break;
+          case 'disconnect':
+            if (window.confirm(`Disconnect from ${server.config.server_name || server.id}?`)) {
+              setConnections(prev => prev.filter(c => c.id !== server.id));
+              storageService.deleteItem('connections', server.id);
+              if (activeConnectionId === server.id) {
+                setActiveConnectionId(null);
+                setActiveDatabase(null);
+              }
+            }
+            break;
+          case 'refresh':
+          case 'reload':
+            handleRefreshConnection(server.id);
+            break;
+          default:
+            break;
+        }
+    } else if (entity.type === 'database') {
+        if (action === 'refresh') handleRefreshConnection(entity.server.id);
+        if (action === 'delete') handleDropDatabase(entity.server.id, entity.database);
+        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); }
+    } else if (entity.type === 'schema') {
+        if (action === 'refresh') handleRefreshConnection(entity.server.id);
+        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); }
+    } else if (entity.type === 'table') {
+        if (action === 'refresh') handleRefreshConnection(entity.server.id);
+        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setActiveTableName(entity.tableName); }
     }
   };
 
@@ -800,9 +843,12 @@ function App() {
               <div key={conn.id} className="mb-4">
                 <div
                   className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
-                  onContextMenu={(e) => handleServerContextMenu(e, conn)}
+                  onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'server', server: conn, isProtected: protectedItems.includes(conn.id) })}
                 >
-                  <span className="truncate pr-4">🖥️ {conn.config.server_name || conn.id}</span>
+                  <span className="truncate pr-4 flex items-center gap-1">
+                    {protectedItems.includes(conn.id) && <span className="text-red-500" title="Protected">🛡️</span>}
+                    🖥️ {conn.config.server_name || conn.id}
+                  </span>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={(e) => {
@@ -832,10 +878,12 @@ function App() {
                     return (
                       <div key={db} className="ml-2">
                         <div
-                          className={`group cursor-pointer px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                          className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
                           onClick={() => handleDbChange(conn.id, db)}
+                          onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: protectedItems.includes(`${conn.id}::${db}`) })}
                         >
                           <div className="flex items-center gap-2 truncate pr-2">
+                            {protectedItems.includes(`${conn.id}::${db}`) && <span className="text-red-500" title="Protected">🛡️</span>}
                             💾 <span className="truncate">{db}</span>
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -861,6 +909,18 @@ function App() {
                                     schemaName={schemaName}
                                     tables={tables}
                                     onTableClick={(s, t) => handleTableClick(conn.id, db, s, t)}
+                                    isSchemaProtected={protectedItems.includes(`${conn.id}::${db}::${schemaName}`)}
+                                    getIsTableProtected={(t) => protectedItems.includes(`${conn.id}::${db}::${schemaName}::${t}`)}
+                                    onContextMenu={(e, type, s, t) => handleExplorerContextMenu(e, {
+                                        type,
+                                        server: conn,
+                                        database: db,
+                                        schemaName: s,
+                                        tableName: t,
+                                        isProtected: type === 'schema' 
+                                            ? protectedItems.includes(`${conn.id}::${db}::${s}`)
+                                            : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`)
+                                    })}
                                   />
                                 ))}
                               </ul>
@@ -1314,12 +1374,12 @@ function App() {
       )}
 
       {contextMenu && (
-        <ServerContextMenu
+        <ExplorerContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
-          server={contextMenu.server}
+          entity={contextMenu.entity}
           onClose={() => setContextMenu(null)}
-          onAction={handleServerAction}
+          onAction={handleExplorerAction}
         />
       )}
 

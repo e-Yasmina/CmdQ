@@ -1,20 +1,24 @@
 import { useState } from 'react';
 
-const SchemaAccordion = ({ schemaName, tables, onTableClick }) => {
+const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSchemaProtected, getIsTableProtected }) => {
     const [isOpen, setIsOpen] = useState(false);
     const tableNames = Object.keys(tables);
 
     return (
         <div className="mb-1">
             <li
-                className="cursor-pointer text-secondary transition-colors flex items-center font-bold py-1 select-none hover:text-primary group"
+                className="cursor-context-menu text-secondary transition-colors flex items-center font-bold py-1 select-none hover:text-primary group"
                 onClick={() => setIsOpen(!isOpen)}
+                onContextMenu={(e) => onContextMenu && onContextMenu(e, 'schema', schemaName)}
                 title={schemaName}
             >
                 <span className="mr-2 text-sm transition-transform duration-200">
                     {isOpen ? '📂' : '📁'}
                 </span>
-                <span className="truncate flex-1">{schemaName}</span>
+                <span className="truncate flex-1 flex items-center gap-1">
+                    {isSchemaProtected && <span className="text-red-500" title="Protected">🛡️</span>}
+                    {schemaName}
+                </span>
                 <span className="ml-2 text-[10px] text-gray-400 bg-black/30 border border-border px-1.5 py-0.5 rounded-full font-code">
                     {tableNames.length}
                 </span>
@@ -25,10 +29,14 @@ const SchemaAccordion = ({ schemaName, tables, onTableClick }) => {
                     {tableNames.map(tableName => (
                         <li key={tableName}
                             onClick={() => onTableClick && onTableClick(schemaName, tableName)}
-                            className="cursor-pointer hover:text-primary transition-colors flex items-center group text-textPrimary py-0.5"
+                            onContextMenu={(e) => onContextMenu && onContextMenu(e, 'table', schemaName, tableName)}
+                            className="cursor-context-menu hover:text-primary transition-colors flex items-center group text-textPrimary py-0.5"
                         >
                             <span className="mr-2 text-gray-500 group-hover:text-primary text-xs opacity-70">📄</span>
-                            <span className="truncate text-xs" title={tableName}>{tableName}</span>
+                            <span className="truncate text-xs flex items-center gap-1" title={tableName}>
+                                {getIsTableProtected && getIsTableProtected(tableName) && <span className="text-red-500" title="Protected">🛡️</span>}
+                                {tableName}
+                            </span>
                         </li>
                     ))}
                 </ul>
