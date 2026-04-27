@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import ScrollArea from './components/ScrollArea';
 import SchemaAccordion from './components/SchemaAccordion';
 import ConnectionForm from './components/forms/ConnectionForm';
@@ -17,6 +17,8 @@ import { apiService } from './services/apiService';
 import { storageService } from './services/storageService';
 import ExplorerContextMenu from './components/ExplorerContextMenu';
 import ServerActionModal from './components/ServerActionModal';
+import ProtectionDiagnosisModal from './components/ProtectionDiagnosisModal';
+import PropertiesModal from './components/PropertiesModal';
 
 function App() {
   const [prompt, setPrompt] = useState("");
@@ -49,8 +51,8 @@ function App() {
 
   // Derived state
   const activeConn = connections.find(c => c.id === activeConnectionId);
-  const activeConfig = activeConn ? { ...activeConn.config, database: activeDatabase || "" } : null;
-  const activeSchema = activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null;
+  const activeConfig = useMemo(() => activeConn ? { ...activeConn.config, database: activeDatabase || "" } : null, [activeConn, activeDatabase]);
+  const activeSchema = useMemo(() => activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null, [activeConn, activeDatabase]);
 
   // AI CLI State
   const [availableClis, setAvailableClis] = useState([]);
@@ -88,6 +90,13 @@ function App() {
 
   // Server Action Modal State
   const [serverActionModal, setServerActionModal] = useState(null); // { type, server }
+
+  // Properties Modal State
+  const [propertiesModal, setPropertiesModal] = useState(null); // { entity }
+
+  // Protection Diagnosis
+  const [diagnosisTarget, setDiagnosisTarget] = useState(null); // { schema, table }
+  const [sessionContext, setSessionContext] = useState([]); // List of SET commands
 
   const fetchClis = () => {
     apiService.fetchClis()
@@ -245,7 +254,7 @@ function App() {
   const handleDbChange = async (connId, dbName) => {
     const nextTabId = `${connId}::${dbName}`;
     const prevTabId = activeConnectionId && activeDatabase ? `${activeConnectionId}::${activeDatabase}` : null;
-    
+
     // Save current active state before switching
     if (prevTabId) {
       tabStateCache.current[prevTabId] = {
@@ -254,7 +263,7 @@ function App() {
     }
 
     const cached = tabStateCache.current[nextTabId] || {
-        chatHistory: [], sqlResult: null, sqlQuery: "", prompt: "", viewMode: "ai", activeSchemaName: null, activeTableName: null
+      chatHistory: [], sqlResult: null, sqlQuery: "", prompt: "", viewMode: "ai", activeSchemaName: null, activeTableName: null
     };
 
     setActiveConnectionId(connId);
@@ -368,16 +377,31 @@ function App() {
         table_name: tableName,
         limit: 100,
         offset: 0,
-        db_config: conf
+        db_config: conf,
+        session_context: sessionContext
       });
+      if (data.status === "error") {
+        setSqlResult({ error: data.message || "Failed to fetch table data" });
+        return;
+      }
+
+      const tableInfo = conn.schemas[dbName]?.[schemaName]?.[tableName];
+      console.log("DEBUG: tableInfo for", tableName, tableInfo);
+      const hasRls = tableInfo?.has_rls || false;
+      const columns = Array.isArray(tableInfo) ? tableInfo : (tableInfo?.columns || []);
+      const constraints = tableInfo?.constraints || [];
+
       setSqlResult({
-        data: data.data,
-        original_data: JSON.parse(JSON.stringify(data.data)),
+        data: data.data || [],
+        original_data: data.data ? JSON.parse(JSON.stringify(data.data)) : [],
         extracted_sql: `SELECT * FROM ${schemaName}.${tableName} LIMIT 100`,
         message: `Fetched 100 rows from ${tableName}`,
         isTableClick: true,
         targetSchema: schemaName,
-        targetTable: tableName
+        targetTable: tableName,
+        hasRls: hasRls,
+        columns: columns,
+        constraints: constraints
       });
     } catch (err) {
       setSqlResult({ error: "Failed to fetch table data: " + err.message });
@@ -413,15 +437,21 @@ function App() {
     try {
       const data = await apiService.executeQuery({
         query: queryText,
-        db_config: activeConfig
+        db_config: activeConfig,
+        session_context: sessionContext
       });
-      
+
       const extracted = extractTableFromQuery(queryText);
       const isSelect = queryText.toLowerCase().trim().startsWith('select');
 
+      if (data.status === "error") {
+        setSqlResult({ error: data.message || "Query Failed" });
+        return;
+      }
+
       setSqlResult({
-        data: data.data,
-        original_data: JSON.parse(JSON.stringify(data.data)),
+        data: data.data || [],
+        original_data: data.data ? JSON.parse(JSON.stringify(data.data)) : [],
         message: data.message,
         extracted_sql: queryText,
         isTableClick: false,
@@ -560,7 +590,8 @@ function App() {
         db_config: activeConfig,
         schema_data: activeSchema || {},
         chat_history: chatHistory,
-        protected_items: protectedItems
+        protected_items: protectedItems,
+        session_context: sessionContext
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
@@ -685,58 +716,61 @@ function App() {
 
   const handleExplorerAction = async (action, entity) => {
     if (action === 'toggle_protect') {
-        const idMap = {
-           'server': entity.server?.id,
-           'database': `${entity.server?.id}::${entity.database}`,
-           'schema': `${entity.server?.id}::${entity.database}::${entity.schemaName}`,
-           'table': `${entity.server?.id}::${entity.database}::${entity.schemaName}::${entity.tableName}`
-        };
-        const id = idMap[entity.type];
-        if (id) {
-            const newProtected = protectedItems.includes(id) 
-               ? protectedItems.filter(p => p !== id) 
-               : [...protectedItems, id];
-            setProtectedItems(newProtected);
-            localStorage.setItem('cmdq_protected_items', JSON.stringify(newProtected));
-        }
-        return;
+      const idMap = {
+        'server': entity.server?.id,
+        'database': `${entity.server?.id}::${entity.database}`,
+        'schema': `${entity.server?.id}::${entity.database}::${entity.schemaName}`,
+        'table': `${entity.server?.id}::${entity.database}::${entity.schemaName}::${entity.tableName}`
+      };
+      const id = idMap[entity.type];
+      if (id) {
+        const newProtected = protectedItems.includes(id)
+          ? protectedItems.filter(p => p !== id)
+          : [...protectedItems, id];
+        setProtectedItems(newProtected);
+        localStorage.setItem('cmdq_protected_items', JSON.stringify(newProtected));
+      }
+      return;
     }
 
     if (entity.type === 'server') {
-        const server = entity.server;
-        switch (action) {
-          case 'rename':
-          case 'properties':
-          case 'backup':
-            setServerActionModal({ type: action, server: server });
-            break;
-          case 'disconnect':
-            if (window.confirm(`Disconnect from ${server.config.server_name || server.id}?`)) {
-              setConnections(prev => prev.filter(c => c.id !== server.id));
-              storageService.deleteItem('connections', server.id);
-              if (activeConnectionId === server.id) {
-                setActiveConnectionId(null);
-                setActiveDatabase(null);
-              }
+      const server = entity.server;
+      switch (action) {
+        case 'rename':
+        case 'properties':
+        case 'backup':
+          setServerActionModal({ type: action, server: server });
+          break;
+        case 'disconnect':
+          if (window.confirm(`Disconnect from ${server.config.server_name || server.id}?`)) {
+            setConnections(prev => prev.filter(c => c.id !== server.id));
+            storageService.deleteItem('connections', server.id);
+            if (activeConnectionId === server.id) {
+              setActiveConnectionId(null);
+              setActiveDatabase(null);
             }
-            break;
-          case 'refresh':
-          case 'reload':
-            handleRefreshConnection(server.id);
-            break;
-          default:
-            break;
-        }
+          }
+          break;
+        case 'refresh':
+        case 'reload':
+          handleRefreshConnection(server.id);
+          break;
+        default:
+          break;
+      }
     } else if (entity.type === 'database') {
-        if (action === 'refresh') handleRefreshConnection(entity.server.id);
-        if (action === 'delete') handleDropDatabase(entity.server.id, entity.database);
-        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); }
+      if (action === 'refresh') handleRefreshConnection(entity.server.id);
+      if (action === 'delete') handleDropDatabase(entity.server.id, entity.database);
+      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); }
+      if (action === 'properties') setPropertiesModal({ entity });
     } else if (entity.type === 'schema') {
-        if (action === 'refresh') handleRefreshConnection(entity.server.id);
-        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); }
+      if (action === 'refresh') handleRefreshConnection(entity.server.id);
+      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); }
+      if (action === 'properties') setPropertiesModal({ entity });
     } else if (entity.type === 'table') {
-        if (action === 'refresh') handleRefreshConnection(entity.server.id);
-        if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setActiveTableName(entity.tableName); }
+      if (action === 'refresh') handleRefreshConnection(entity.server.id);
+      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setActiveTableName(entity.tableName); }
+      if (action === 'properties') setPropertiesModal({ entity });
     }
   };
 
@@ -825,7 +859,8 @@ function App() {
 
       {/* Left Sidebar (The Explorer) */}
       <aside className="w-64 bg-panel border-r border-border flex flex-col flex-shrink-0">
-        <div className="p-4 border-b border-border flex flex-col gap-2">
+        {/* <div className="p-4 border-b border-border flex flex-col gap-2"> */}
+        <div className="p-4 flex flex-col gap-2">
           <button
             onClick={() => setShowConnectionForm(true)}
             className="w-full bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-background font-bold p-1.5 rounded text-sm transition-all focus:outline-none cursor-pointer"
@@ -912,14 +947,14 @@ function App() {
                                     isSchemaProtected={protectedItems.includes(`${conn.id}::${db}::${schemaName}`)}
                                     getIsTableProtected={(t) => protectedItems.includes(`${conn.id}::${db}::${schemaName}::${t}`)}
                                     onContextMenu={(e, type, s, t) => handleExplorerContextMenu(e, {
-                                        type,
-                                        server: conn,
-                                        database: db,
-                                        schemaName: s,
-                                        tableName: t,
-                                        isProtected: type === 'schema' 
-                                            ? protectedItems.includes(`${conn.id}::${db}::${s}`)
-                                            : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`)
+                                      type,
+                                      server: conn,
+                                      database: db,
+                                      schemaName: s,
+                                      tableName: t,
+                                      isProtected: type === 'schema'
+                                        ? protectedItems.includes(`${conn.id}::${db}::${s}`)
+                                        : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`)
                                     })}
                                   />
                                 ))}
@@ -1023,114 +1058,128 @@ function App() {
 
         {/* Main Header / View Toggle */}
         <div className="border-b border-border bg-panel flex flex-col justify-between items-start">
-           {/* Tab Bar */}
-           <div className="flex w-full bg-background/50 border-b border-border overflow-x-auto min-h-[36px] no-scrollbar">
-               {openTabs.length === 0 && (
-                   <div className="px-4 py-2 text-xs font-bold text-gray-500 italic">No workspace open. Select a database from the explorer.</div>
-               )}
-               {openTabs.map(tabId => {
-                  const [tConn, tDb] = tabId.split('::');
-                  return (
-                     <div 
-                        key={tabId} 
-                        onClick={() => handleDbChange(tConn, tDb)}
-                        className={`px-4 py-2 text-xs font-bold border-r border-border cursor-pointer flex items-center gap-2 transition-colors ${activeTabId === tabId ? 'bg-panel text-primary border-t-2 border-t-primary' : 'hover:bg-panel text-gray-500 hover:text-gray-300'}`}
-                     >
-                        💾 {tDb} <span className="text-[10px] opacity-40 font-normal truncate max-w-[100px]">{tConn}</span>
-                        <div onClick={(e) => { e.stopPropagation(); closeTab(tabId); }} className="hover:text-red-400 ml-2 rounded p-[1px] hover:bg-white/10 text-gray-400 leading-none">✕</div>
-                     </div>
-                  )
-               })}
-           </div>
-
-          <div className="flex justify-between items-center w-full p-2 px-4 shadow-[0_4px_10px_rgba(0,0,0,0.1)] z-10">
-          <div className="flex items-center gap-4">
-            <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
-            <div className="flex bg-background border border-border rounded p-1">
-              <button
-                onClick={() => setViewMode('ai')}
-                className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'ai' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
-              >
-                AI Prompt
-              </button>
-              <button
-                onClick={() => setViewMode('query')}
-                className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'query' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
-              >
-                SQL Editor
-              </button>
-            </div>
+          {/* Tab Bar */}
+          <div className="flex w-full bg-background/50 border-b border-border overflow-x-auto min-h-[36px] no-scrollbar">
+            {openTabs.length === 0 && (
+              <div className="px-4 py-2 text-xs font-bold text-gray-500 italic">No workspace open. Select a database from the explorer.</div>
+            )}
+            {openTabs.map(tabId => {
+              const [tConn, tDb] = tabId.split('::');
+              return (
+                <div
+                  key={tabId}
+                  onClick={() => handleDbChange(tConn, tDb)}
+                  className={`px-4 py-2 text-xs font-bold border-r border-border cursor-pointer flex items-center gap-2 transition-colors ${activeTabId === tabId ? 'bg-panel text-primary border-t-2 border-t-primary' : 'hover:bg-panel text-gray-500 hover:text-gray-300'}`}
+                >
+                  💾 {tDb} <span className="text-[10px] opacity-40 font-normal truncate max-w-[100px]">{tConn}</span>
+                  <div onClick={(e) => { e.stopPropagation(); closeTab(tabId); }} className="hover:text-red-400 ml-2 rounded p-[1px] hover:bg-white/10 text-gray-400 leading-none">✕</div>
+                </div>
+              )
+            })}
           </div>
 
-          {viewMode === 'ai' && (
-            <div className="flex gap-2">
-              <select
-                value={selectedCli}
-                onChange={(e) => { setSelectedCli(e.target.value); setChatHistory([]); }}
-                className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary max-w-48"
-              >
-                {availableClis.map(cli => (
-                  <option key={cli.command} value={cli.command}>
-                    {cli.name} {cli.command !== 'custom' ? `(${cli.command})` : ''}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={() => setShowApiModal(true)}
-                title="Connect API Model directly"
-                className="bg-panel border border-border hover:bg-white/5 text-textPrimary flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-              >
-                + API Model
-              </button>
-
-              {selectedCli === "custom" && (
-                <input
-                  type="text"
-                  value={customCliCommand}
-                  onChange={(e) => setCustomCliCommand(e.target.value)}
-                  placeholder="e.g. 'gemini'"
-                  className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary w-32"
-                />
-              )}
-
-              {currentAbortController ? (
+          <div className="flex justify-between items-center w-full p-2 px-4 shadow-[0_4px_10px_rgba(0,0,0,0.1)] z-10">
+            <div className="flex items-center gap-4">
+              <h1 className="font-bold text-lg text-primary tracking-wide">CmdQ ENGINE</h1>
+              <div className="flex bg-background border border-border rounded p-1">
                 <button
-                  onClick={stopAi}
-                  className="bg-red-500 hover:bg-red-600 text-white flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
-                  title="Stop Generation"
+                  onClick={() => setViewMode('ai')}
+                  className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'ai' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
                 >
-                  ■
+                  AI Prompt
                 </button>
-              ) : (
                 <button
-                  onClick={launchCli}
-                  disabled={!activeConfig}
-                  title={activeConfig ? "Launch CLI locally" : "Choose a database first"}
-                  className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                  onClick={() => setViewMode('query')}
+                  className={`px-3 py-1 text-xs font-bold rounded transition-colors cursor-pointer ${viewMode === 'query' ? 'bg-primary text-background' : 'text-gray-400 hover:text-white'}`}
                 >
-                  ▶
+                  SQL Editor
                 </button>
-              )}
-              {/* <button
+              </div>
+            </div>
+
+            {viewMode === 'ai' && (
+              <div className="flex gap-2">
+                <select
+                  value={selectedCli}
+                  onChange={(e) => { setSelectedCli(e.target.value); setChatHistory([]); }}
+                  className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary max-w-48"
+                >
+                  {availableClis.map(cli => (
+                    <option key={cli.command} value={cli.command}>
+                      {cli.name}
+                      {/* {cli.command !== 'custom' ? `(${cli.command})` : ''} */}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => setShowApiModal(true)}
+                  title="Connect API Model directly"
+                  className="bg-panel border border-border hover:bg-white/5 text-textPrimary flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
+                >
+                  + API Model
+                </button>
+
+                {selectedCli === "custom" && (
+                  <input
+                    type="text"
+                    value={customCliCommand}
+                    onChange={(e) => setCustomCliCommand(e.target.value)}
+                    placeholder="e.g. 'gemini'"
+                    className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary w-32"
+                  />
+                )}
+
+                {currentAbortController ? (
+                  <button
+                    onClick={stopAi}
+                    className="bg-red-500 hover:bg-red-600 text-white flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                    title="Stop Generation"
+                  >
+                    ■
+                  </button>
+                ) : (
+                  <button
+                    onClick={launchCli}
+                    disabled={!activeConfig}
+                    title={activeConfig ? "Launch CLI locally" : "Choose a database first"}
+                    className="bg-primary hover:brightness-110 disabled:opacity-50 text-background flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                  >
+                    ▶
+                  </button>
+                )}
+                {/* <button
                 onClick={handleDebugLaunch}
                 disabled={!activeConfig}
                 title="Open visible debug terminal for this model"
                 className="bg-orange-500/20 text-orange-400 border border-orange-500/50 hover:bg-orange-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
-              >
-                Debug Console
-              </button> */}
-              {chatHistory.length > 0 && (
-                <button
-                  onClick={() => setChatHistory([])}
-                  title="Clear Session Memory"
-                  className="bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
                 >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
+                  Debug Console
+                </button> */}
+                {chatHistory.length > 0 && (
+                  <button
+                    onClick={() => setChatHistory([])}
+                    title="Clear Session Memory"
+                    className="bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 flex items-center justify-center p-1 px-3 rounded text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                )}
+
+                {sessionContext.length > 0 && (
+                  <div className="flex items-center gap-1 bg-cyan-500/10 border border-cyan-500/40 rounded px-2 py-0.5 ml-2">
+                    <span className="text-cyan-400 text-[10px] whitespace-nowrap">🔐 {sessionContext.length} Context Cmds</span>
+                    <button 
+                      onClick={() => setSessionContext([])}
+                      className="text-cyan-400 hover:text-white text-xs font-bold px-1 ml-1"
+                      title="Clear session context (RLS/ERLS bypass commands)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1283,49 +1332,50 @@ function App() {
                   activeConfig={activeConfig}
                   activeSchemaName={sqlResult?.targetSchema || activeSchemaName}
                   activeTableName={sqlResult?.targetTable || activeTableName}
+                  onDiagnose={(s, t) => setDiagnosisTarget({ schema: s, table: t })}
                   onRefresh={() => {
-                     if (sqlResult?.extracted_sql && !sqlResult?.isTableClick) {
-                         executeManualQuery(sqlResult.extracted_sql);
-                     } else {
-                         refreshTableData();
-                     }
+                    if (sqlResult?.extracted_sql && !sqlResult?.isTableClick) {
+                      executeManualQuery(sqlResult.extracted_sql);
+                    } else {
+                      refreshTableData();
+                    }
                   }}
                   onLocalMutation={(type, payload) => {
-                     setSqlResult(prev => {
-                        if (!prev || !prev.data) return prev;
-                        const data = [...prev.data];
-                        let original_data = prev.original_data ? [...prev.original_data] : null;
+                    setSqlResult(prev => {
+                      if (!prev || !prev.data) return prev;
+                      const data = [...prev.data];
+                      let original_data = prev.original_data ? [...prev.original_data] : null;
 
-                        if (type === 'update') {
-                           data[payload.rowIndex] = { ...data[payload.rowIndex], [payload.updateKey]: payload.updateValue };
-                           if (original_data) {
-                               const transKeys = Object.keys(data[payload.rowIndex]);
-                               const origKeys = Object.keys(original_data[payload.rowIndex]);
-                               const keyIdx = transKeys.indexOf(payload.updateKey);
-                               const realKey = keyIdx !== -1 && origKeys[keyIdx] ? origKeys[keyIdx] : payload.updateKey;
-                               original_data[payload.rowIndex] = { ...original_data[payload.rowIndex], [realKey]: payload.updateValue };
-                           }
-                        } else if (type === 'delete') {
-                           const idx = data.indexOf(payload.row);
-                           if (idx > -1) {
-                               data.splice(idx, 1);
-                               if (original_data) original_data.splice(idx, 1);
-                           }
-                        } else if (type === 'insert') {
-                           data.unshift(payload.row);
-                           if (original_data) {
-                               const mockData = {};
-                               const origKeys = Object.keys(original_data[0] || {});
-                               const transKeys = Object.keys(payload.row);
-                               for(let i=0; i<transKeys.length; i++) {
-                                   let realKey = origKeys[i] ? origKeys[i] : transKeys[i];
-                                   mockData[realKey] = payload.row[transKeys[i]];
-                               }
-                               original_data.unshift(mockData);
-                           }
+                      if (type === 'update') {
+                        data[payload.rowIndex] = { ...data[payload.rowIndex], [payload.updateKey]: payload.updateValue };
+                        if (original_data) {
+                          const transKeys = Object.keys(data[payload.rowIndex]);
+                          const origKeys = Object.keys(original_data[payload.rowIndex]);
+                          const keyIdx = transKeys.indexOf(payload.updateKey);
+                          const realKey = keyIdx !== -1 && origKeys[keyIdx] ? origKeys[keyIdx] : payload.updateKey;
+                          original_data[payload.rowIndex] = { ...original_data[payload.rowIndex], [realKey]: payload.updateValue };
                         }
-                        return { ...prev, data, original_data };
-                     });
+                      } else if (type === 'delete') {
+                        const idx = data.indexOf(payload.row);
+                        if (idx > -1) {
+                          data.splice(idx, 1);
+                          if (original_data) original_data.splice(idx, 1);
+                        }
+                      } else if (type === 'insert') {
+                        data.unshift(payload.row);
+                        if (original_data) {
+                          const mockData = {};
+                          const origKeys = Object.keys(original_data[0] || {});
+                          const transKeys = Object.keys(payload.row);
+                          for (let i = 0; i < transKeys.length; i++) {
+                            let realKey = origKeys[i] ? origKeys[i] : transKeys[i];
+                            mockData[realKey] = payload.row[transKeys[i]];
+                          }
+                          original_data.unshift(mockData);
+                        }
+                      }
+                      return { ...prev, data, original_data };
+                    });
                   }}
                 />
               )}
@@ -1391,6 +1441,32 @@ function App() {
           onConfirm={handleServerActionConfirm}
         />
       )}
+
+      {diagnosisTarget && (
+        <ProtectionDiagnosisModal
+          schemaName={diagnosisTarget.schema}
+          tableName={diagnosisTarget.table}
+          activeConfig={activeConfig}
+          onClose={() => setDiagnosisTarget(null)}
+          onApplyFix={(step) => {
+            if (!sessionContext.includes(step)) {
+              setSessionContext(prev => [...prev, step]);
+            }
+            // Re-run the current table fetch or query if possible
+            if (activeTableName === diagnosisTarget.table) {
+              refreshTableData();
+            }
+          }}
+        />
+      )}
+
+      {propertiesModal && (
+        <PropertiesModal
+          entity={propertiesModal.entity}
+          onClose={() => setPropertiesModal(null)}
+        />
+      )}
+
     </div>
   );
 }

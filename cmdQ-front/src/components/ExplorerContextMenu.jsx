@@ -33,17 +33,20 @@ export default function ExplorerContextMenu({ x, y, onClose, onAction, entity })
             { id: 'export', label: 'Export', icon: '📤' },
             { id: 'backup', label: 'Backup', icon: '💾' },
             { id: 'restore', label: 'Restore', icon: '📥' },
-            { id: 'delete', label: 'Delete', icon: '🗑️' }
+            { id: 'delete', label: 'Delete', icon: '🗑️' },
+            { id: 'properties', label: 'Properties', icon: '📋' }
         ];
     } else if (entity.type === 'schema') {
         menuItems = [
             { id: 'refresh', label: 'Refresh', icon: '🔄' },
-            { id: 'export', label: 'Export', icon: '📤' }
+            { id: 'export', label: 'Export', icon: '📤' },
+            { id: 'properties', label: 'Properties', icon: '📋' }
         ];
     } else if (entity.type === 'table') {
         menuItems = [
             { id: 'refresh', label: 'Refresh', icon: '🔄' },
-            { id: 'export', label: 'Export', icon: '📤' }
+            { id: 'export', label: 'Export', icon: '📤' },
+            { id: 'properties', label: 'Properties', icon: '📋' }
         ];
     }
 

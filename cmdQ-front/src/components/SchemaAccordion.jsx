@@ -35,6 +35,7 @@ const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSc
                             <span className="mr-2 text-gray-500 group-hover:text-primary text-xs opacity-70">📄</span>
                             <span className="truncate text-xs flex items-center gap-1" title={tableName}>
                                 {getIsTableProtected && getIsTableProtected(tableName) && <span className="text-red-500" title="Protected">🛡️</span>}
+                                {tables[tableName]?.has_rls && <span className="text-cyan-400" title="ERLS / Row Level Security Active">🔐</span>}
                                 {tableName}
                             </span>
                         </li>

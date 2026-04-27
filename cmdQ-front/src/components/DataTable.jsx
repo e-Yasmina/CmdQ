@@ -4,7 +4,7 @@ import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
 
-export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh, onLocalMutation }) {
+export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh, onLocalMutation, onDiagnose }) {
     const [editingCell, setEditingCell] = useState(null); // { rowIndex, key, value }
     const [addingRow, setAddingRow] = useState(null);
     const [isMutating, setIsMutating] = useState(false);
@@ -173,10 +173,9 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     };
 
     const handleAddRowInit = () => {
-        if (!result.data || result.data.length === 0) return;
+        if (columns.length === 0) return;
         const newRow = {};
-        const cols = Object.keys(result.data[0]);
-        cols.forEach(c => newRow[c] = "");
+        columns.forEach(c => newRow[c] = "");
         setAddingRow(newRow);
     };
 
@@ -241,7 +240,9 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     };
 
     const hasData = result.data && result.data.length > 0;
-    const columns = hasData ? Object.keys(result.data[0]) : [];
+    const columns = hasData ? Object.keys(result.data[0]) : (result.columns || []);
+
+    console.log("DEBUG: DataTable rendering for", activeTableName, "hasData:", hasData, "columns:", columns, "constraints:", result.constraints);
 
     return (
         <ScrollArea className="p-4 flex flex-col gap-4 h-full relative">
@@ -254,7 +255,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             )}
 
             {/* Data Rows displayed first */}
-            {hasData && (
+            {(hasData || (result.isTableClick && columns.length > 0)) && (
                 <div className="flex flex-col flex-1 min-h-[200px]">
                     <ScrollArea className="flex-1 border border-border rounded bg-background overflow-auto min-h-0 relative">
                         <table className="min-w-max w-full text-left text-xs text-gray-300">
@@ -391,7 +392,53 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             {/* Removed the bottom placement of these rendering blocks in favor of putting them above */}
 
             {!hasData && (result.extracted_sql || result.message) && (
-                <div className="text-gray-500 italic text-xs mt-2">Query executed successfully (0 rows returned).</div>
+                <div className="flex flex-col items-center gap-3 mt-4 p-6 border border-dashed border-border rounded bg-panel/30">
+                    <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
+                    
+                    {(result.hasRls || !result.isTableClick) && (
+                        <>
+                            <button 
+                                onClick={() => onDiagnose && onDiagnose(activeSchemaName, activeTableName)}
+                                className="bg-cyan-500/10 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500 hover:text-black px-4 py-2 rounded text-xs font-bold transition-all flex items-center gap-2"
+                            >
+                                🔐 Diagnose ERLS / Protection
+                            </button>
+                            <p className="text-[10px] text-gray-600 max-w-sm text-center">
+                                If this table should have data but returns nothing, it might be protected by Row Level Security or a Multi-tenant Protocol.
+                            </p>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* Constraints Display */}
+            {(result.constraints || (result.isTableClick && columns.length > 0)) && (
+                <div className="mt-4 border border-border rounded bg-panel/20 p-4">
+                    <h3 className="text-xs font-bold text-primary uppercase mb-2 flex items-center gap-2">
+                        🔗 Table Constraints
+                    </h3>
+                    {result.constraints && result.constraints.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {result.constraints.map((c, idx) => (
+                                <div key={idx} className="flex flex-col bg-black/40 border border-border/60 p-3 rounded-lg hover:border-primary/50 transition-all group shadow-sm">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-[11px] text-secondary font-bold truncate group-hover:text-primary transition-colors" title={c.name}>{c.name}</span>
+                                        <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded border border-primary/20 uppercase font-bold tracking-tighter shrink-0">{c.type}</span>
+                                    </div>
+                                    {c.definition && c.definition !== 'None' && c.definition !== '' && (
+                                        <div className="text-[10px] text-gray-400 font-code mt-1 break-words opacity-80 group-hover:opacity-100 transition-opacity">
+                                            {c.definition}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-[10px] text-gray-500 italic py-2">
+                            No constraints found for this table. Try refreshing the schema if you expect constraints here.
+                        </div>
+                    )}
+                </div>
             )}
 
             {showExportModal && (
