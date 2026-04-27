@@ -96,7 +96,10 @@ export const apiService = {
         const res = await fetch(`${API_BASE_URL}/query`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                ...payload,
+                session_context: payload.session_context || []
+            })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Query failed");
@@ -107,7 +110,10 @@ export const apiService = {
         const res = await fetch(`${API_BASE_URL}/table_data`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                ...payload,
+                session_context: payload.session_context || []
+            })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to fetch table data");
@@ -238,6 +244,17 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to translate table");
+        return data;
+    },
+
+    fetchProtectionAnalysis: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/analyze/protection`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to analyze protection");
         return data;
     }
 };

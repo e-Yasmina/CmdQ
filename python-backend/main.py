@@ -27,6 +27,7 @@ class ConnectionDetails(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     db_config: ConnectionDetails
+    session_context: List[str] = []
 
 class TableDataRequest(BaseModel):
     table_name: str
@@ -34,6 +35,7 @@ class TableDataRequest(BaseModel):
     limit: int = 100
     offset: int = 0
     db_config: ConnectionDetails
+    session_context: List[str] = []
 
 class ChatMessage(BaseModel):
     role: str
@@ -46,6 +48,7 @@ class AIPrompt(BaseModel):
     schema_data: Dict[str, Any]
     chat_history: List[ChatMessage] = []
     protected_items: List[str] = []
+    session_context: List[str] = []
 
 class SecurityAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -58,6 +61,11 @@ class PerformanceAnalysisRequest(BaseModel):
     schema_name: str = ""
     table_name: str = ""
     command: str = ""
+
+class ProtectionAnalysisRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str
+    table_name: str
 
 class DataAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -229,17 +237,23 @@ async def get_schema(details: ConnectionDetails):
         schema_dict = {}
         if details.db_type == "postgres":
             query = """
-                SELECT c.table_schema, c.table_name, c.column_name 
+                SELECT 
+                    c.table_schema, 
+                    c.table_name, 
+                    c.column_name,
+                    pgc.relrowsecurity as has_rls
                 FROM information_schema.columns c
                 JOIN information_schema.tables t 
                   ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+                JOIN pg_class pgc ON pgc.relname = t.table_name
+                JOIN pg_namespace pgn ON pgn.oid = pgc.relnamespace AND pgn.nspname = t.table_schema
                 WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
                   AND t.table_type = 'BASE TABLE'
                 ORDER BY c.table_schema, c.table_name, c.ordinal_position;
             """
         else:
             query = """
-                SELECT c.table_schema, c.table_name, c.column_name 
+                SELECT c.table_schema, c.table_name, c.column_name, false as has_rls
                 FROM information_schema.columns c
                 JOIN information_schema.tables t 
                   ON c.table_schema = t.table_schema AND c.table_name = t.table_name
@@ -250,17 +264,152 @@ async def get_schema(details: ConnectionDetails):
             
         result = session.execute(text(query)).fetchall()
         for row in result:
-            schema_name, table_name, col_name = row[0], row[1], row[2]
+            schema_name, table_name, col_name, has_rls = row[0], row[1], row[2], row[3]
             if schema_name not in schema_dict:
                 schema_dict[schema_name] = {}
             if table_name not in schema_dict[schema_name]:
-                schema_dict[schema_name][table_name] = []
-            schema_dict[schema_name][table_name].append(col_name)
+                schema_dict[schema_name][table_name] = {"columns": [], "has_rls": bool(has_rls), "constraints": []}
+            schema_dict[schema_name][table_name]["columns"].append(col_name)
             
+        # Fetch constraints
+        if details.db_type == "postgres":
+            constr_query = """
+                SELECT 
+                    tc.table_schema, 
+                    tc.table_name, 
+                    tc.constraint_name, 
+                    tc.constraint_type,
+                    pg_get_constraintdef(c.oid) AS definition
+                FROM information_schema.table_constraints AS tc
+                JOIN pg_namespace n ON n.nspname = tc.table_schema
+                JOIN pg_class cl ON cl.relname = tc.table_name AND cl.relnamespace = n.oid
+                JOIN pg_constraint c ON c.conrelid = cl.oid AND c.conname = tc.constraint_name
+                WHERE tc.table_schema NOT IN ('information_schema', 'pg_catalog');
+            """
+        else:
+            constr_query = """
+                SELECT table_schema, table_name, constraint_name, constraint_type, '' as definition
+                FROM information_schema.table_constraints
+                WHERE table_schema = DATABASE();
+            """
+        
+        constr_result = session.execute(text(constr_query)).fetchall()
+        print(f"DEBUG: Found {len(constr_result)} constraints in total.")
+        matched_count = 0
+        unmatched_samples = []
+        for row in constr_result:
+            s_name, t_name, c_name, c_type, c_def = str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4])
+            
+            # 1. Try exact match
+            if s_name in schema_dict and t_name in schema_dict[s_name]:
+                schema_dict[s_name][t_name]["constraints"].append({
+                    "name": c_name, 
+                    "type": c_type,
+                    "definition": c_def
+                })
+                matched_count += 1
+                continue
+                
+            # 2. Try lowercase match
+            s_low, t_low = s_name.lower(), t_name.lower()
+            s_match = next((k for k in schema_dict.keys() if k.lower() == s_low), None)
+            if s_match:
+                t_match = next((k for k in schema_dict[s_match].keys() if k.lower() == t_low), None)
+                if t_match:
+                    schema_dict[s_match][t_match]["constraints"].append({
+                        "name": c_name, 
+                        "type": c_type,
+                        "definition": c_def
+                    })
+                    matched_count += 1
+                    continue
+            
+            if len(unmatched_samples) < 5:
+                unmatched_samples.append(f"{s_name}.{t_name}")
+                
+        print(f"DEBUG: Matched {matched_count} constraints. Unmatched samples: {unmatched_samples}")
+
         session.close()
         return {"status": "success", "schema": schema_dict}
     except Exception as e:
+        session.close() # Ensure closure on error
         raise HTTPException(status_code=400, detail=f"Schema extraction failed: {str(e)}")
+
+@app.post("/analyze/protection")
+async def analyze_protection(req: ProtectionAnalysisRequest):
+    """Diagnoses Row Level Security (RLS) or other 'ERLS' style protection mechanisms."""
+    try:
+        session = get_db_connection(
+            db_type=req.db_config.db_type,
+            host=req.db_config.host,
+            port=req.db_config.port,
+            user=req.db_config.user,
+            password=req.db_config.password,
+            dbname=req.db_config.database
+        )
+        
+        report = {
+            "is_protected": False,
+            "mechanisms": [],
+            "suggested_steps": [],
+            "details": {}
+        }
+        
+        if req.db_config.db_type == "postgres":
+            # Check for RLS
+            rls_query = """
+                SELECT 
+                    c.relrowsecurity, 
+                    c.relforcerowsecurity
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = :schema AND c.relname = :table;
+            """
+            result = session.execute(text(rls_query), {"schema": req.schema_name, "table": req.table_name}).fetchone()
+            
+            if result:
+                rls_enabled, rls_forced = result
+                if rls_enabled:
+                    report["is_protected"] = True
+                    report["mechanisms"].append("PostgreSQL Row Level Security (RLS)")
+                    
+                    # Fetch policies
+                    policy_query = """
+                        SELECT policyname, roles, cmd, qual, with_check
+                        FROM pg_policies
+                        WHERE schemaname = :schema AND tablename = :table;
+                    """
+                    policies = session.execute(text(policy_query), {"schema": req.schema_name, "table": req.table_name}).fetchall()
+                    report["details"]["policies"] = []
+                    for p in policies:
+                        p_dict = {
+                            "name": p[0],
+                            "roles": list(p[1]) if p[1] else [],
+                            "command": p[2],
+                            "qual": p[3],
+                            "with_check": p[4]
+                        }
+                        report["details"]["policies"].append(p_dict)
+                        
+                        qual = p_dict["qual"] or ""
+                        if "current_setting" in qual:
+                            import re
+                            # Match current_setting('var', ...) or current_setting('var')
+                            match = re.search(r"current_setting\(\s*'([^']+)'", qual)
+                            if match:
+                                var_name = match.group(1)
+                                if var_name not in [s.split()[1] for s in report["suggested_steps"] if "SET" in s]:
+                                    report["suggested_steps"].append(f"SET {var_name} = 'demo'; -- Adjust value as needed")
+                
+            # Generic search_path suggestions
+            if "search_path" not in str(report["suggested_steps"]) and req.schema_name != "public":
+                report["suggested_steps"].append(f'SET search_path TO "{req.schema_name}", public;')
+
+        session.close()
+        return {"status": "success", "report": report}
+    except Exception as e:
+        if 'session' in locals(): session.close()
+        return {"status": "error", "message": str(e)}
 
 @app.post("/query")
 async def execute_query(req: QueryRequest):
@@ -280,11 +429,19 @@ async def execute_query(req: QueryRequest):
             db_part = f"/{cfg.database}" if cfg.database else ""
             connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}{db_part}"
             
-        engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
-        
-        with engine.connect() as conn:
+        engine = create_engine(connection_url)
+        execution_results = []
+        with engine.begin() as conn:
+            # Execute session context commands first
+            if req.session_context:
+                for cmd in req.session_context:
+                    if cmd.strip():
+                        try:
+                            conn.execute(text(cmd))
+                        except:
+                            pass
+            
             result_proxy = conn.execute(text(req.query))
-            execution_results = []
             
             if result_proxy.returns_rows:
                 rows = result_proxy.fetchall()
@@ -295,7 +452,7 @@ async def execute_query(req: QueryRequest):
                     for k, v in zip(keys, row):
                         row_dict[k] = str(v) if v is not None else None
                     execution_results.append(row_dict)
-                    
+        
         return {"status": "success", "data": execution_results, "message": "Query executed successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {str(e)}"}
@@ -316,11 +473,19 @@ async def get_table_data(req: TableDataRequest):
         if req.db_config.db_type == "postgres":
             query = f'SELECT * FROM "{req.schema_name}"."{req.table_name}" LIMIT :limit OFFSET :offset'
         else:
-            # For MySQL, schema_name is typically the database name, and it doesn't use the same quoting
             query = f"SELECT * FROM `{req.schema_name}`.`{req.table_name}` LIMIT :limit OFFSET :offset"
-            
-        result_proxy = session.execute(text(query), {"limit": req.limit, "offset": req.offset})
+
+        # Execution results
         execution_results = []
+        if req.session_context:
+            for cmd in req.session_context:
+                if cmd.strip():
+                    try:
+                        session.execute(text(cmd))
+                    except:
+                        pass
+        
+        result_proxy = session.execute(text(query), {"limit": req.limit, "offset": req.offset})
         
         if result_proxy.returns_rows:
             rows = result_proxy.fetchall()
@@ -330,7 +495,7 @@ async def get_table_data(req: TableDataRequest):
                 for k, v in zip(keys, row):
                     row_dict[k] = str(v) if v is not None else None
                 execution_results.append(row_dict)
-                
+        
         session.close()
         return {"status": "success", "data": execution_results}
     except Exception as e:
@@ -361,7 +526,8 @@ async def detect_cli():
         "gemini": "Gemini CLI",
         "gh": "GitHub Copilot CLI (gh)",
         "ollama": "Ollama Local AI",
-        "chatgpt": "ChatGPT CLI"
+        "chatgpt": "ChatGPT CLI",
+        "qwen": "Qwen CLI",
     }
     
     # Common npm/bin paths to check if shutils.which fails
@@ -792,13 +958,13 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
                 if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                 else:
                     import tempfile
                     pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
                     with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                     try: os.remove(pf)
                     except: pass
@@ -960,13 +1126,13 @@ async def analyze_data(req: DataAnalysisRequest):
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
                 if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                 else:
                     import tempfile
                     pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
                     with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                     try: os.remove(pf)
                     except: pass
@@ -1109,13 +1275,13 @@ async def analyze_summary(req: SummaryAnalysisRequest):
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
                 if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=120)
+                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                 else:
                     import tempfile
                     pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
                     with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                     try: os.remove(pf)
                     except: pass
@@ -1161,7 +1327,7 @@ def translate_table(req: TranslateRequest):
                 payload_data = {"model": model_name, "max_tokens": 8192, "messages": [{"role": "user", "content": prompt_str}]}
             
             req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req_obj, timeout=180) as response:
+            with urllib.request.urlopen(req_obj, timeout=300) as response:
                 res_data = json.loads(response.read().decode("utf-8"))
                 if provider in ["openai", "custom_openai"]:
                     output = res_data["choices"][0]["message"]["content"]
@@ -1194,17 +1360,17 @@ def translate_table(req: TranslateRequest):
                     else:
                         run_cmd = [cmd_to_run, "-p", prompt_str[:7000]]
                         
-                    result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=180)
+                    result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                 else:
                     pf = os.path.join(tempfile.gettempdir(), "cmdq_translate_prompt.txt")
                     with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=180)
+                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                     try: os.remove(pf)
                     except: pass
             except subprocess.TimeoutExpired:
-                raise Exception("CLI process timed out after 180 seconds")
+                raise Exception("CLI process timed out after 300 seconds")
                     
         import re
         sql_match = re.search(r'```(?:json)?\s*(.*?)\s*```', output, re.IGNORECASE | re.DOTALL)
@@ -1258,6 +1424,11 @@ async def ai_prompt(payload: AIPrompt):
             prot_list = ", ".join([f"'{p.split('::')[-1]}'" for p in payload.protected_items])
             protection_instruction = f"URGENT ABSOLUTE RULE: The following databases, schemas, or tables are PROTECTED and strictly forbidden to be accessed or modified: {prot_list}. You MUST NEVER generate queries targeting them.\n\n"
 
+        session_context_instr = ""
+        if payload.session_context:
+            ctx_cmds = "\n".join(payload.session_context)
+            session_context_instr = f"ACTIVE SESSION CONTEXT (These commands are automatically executed before your generated SQL, so you don't need to repeat them):\n{ctx_cmds}\n\n"
+
         base_prompt = (
             f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
             f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
@@ -1265,14 +1436,17 @@ async def ai_prompt(payload: AIPrompt):
             f"{metadata_str}\n"
             f"Schema JSON: {schema_json_str}\n\n"
             f"{protection_instruction}"
+            f"{session_context_instr}"
             f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
             f"Provide your answer. IF you determine that a SQL query needs to be executed "
             f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block.\n"
-            f"IMPORTANT: If you encounter an error (like a check constraint violation) and need to run a diagnostic SELECT query to investigate the schema structure before solving the user's request, "
-            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute the query and automatically feed you the results so you can continue your task!\n"
-            f"CRITICAL: When you are completely finished with your response, you MUST output the exact token: __CMDQ_DONE__"
+            f"IMPORTANT: If you need to run a diagnostic SELECT query to investigate the schema or data states before performing the final action, "
+            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute it and give you the results so you can continue. "
+            f"HOWEVER, investigation is ONLY a means to an end. You MUST eventually perform the final action (INSERT, UPDATE, etc.) requested by the user in the same session. "
+            f"Do NOT stop after an investigation; use the results to complete the task immediately.\n"
+            f"CRITICAL: When you are completely finished with the ENTIRE task, you MUST output the exact token: __CMDQ_DONE__"
         )
 
         cmd_to_run = payload.command
@@ -1282,7 +1456,7 @@ async def ai_prompt(payload: AIPrompt):
         # This completely bypasses Windows CMD's 8191 character argument limit.
         import tempfile
         
-        MAX_RETRIES = 2
+        MAX_RETRIES = 5
         current_prompt = base_prompt
         output = ""
         error_output = ""
@@ -1392,7 +1566,7 @@ async def ai_prompt(payload: AIPrompt):
                             run_cmd,
                             capture_output=True,
                             text=True,
-                            timeout=120,
+                            timeout=300,
                             env=env
                         )
                         output = result.stdout.strip()
@@ -1408,7 +1582,7 @@ async def ai_prompt(payload: AIPrompt):
                             shell=True,
                             capture_output=True,
                             text=True,
-                            timeout=120,
+                            timeout=300,
                             env=env
                         )
                         output = result.stdout.strip()
@@ -1421,7 +1595,7 @@ async def ai_prompt(payload: AIPrompt):
                         print(f"DEBUG: CLI stderr: {error_output[:200]}...")
                 except subprocess.TimeoutExpired:
                     output = ""
-                    error_output = "CLI process timed out after 120 seconds."
+                    error_output = "CLI process timed out after 300 seconds."
                     print(f"DEBUG: CLI TIMEOUT")
                 except Exception as cli_err:
                     output = ""
@@ -1515,6 +1689,12 @@ async def ai_prompt(payload: AIPrompt):
                         # Transactional execution for clean rollbacks upon failure
                         engine = create_engine(base_url + current_db)
                         with engine.begin() as conn:
+                            # Execute session context first
+                            if payload.session_context:
+                                for ctx_cmd in payload.session_context:
+                                    if ctx_cmd.strip():
+                                        conn.execute(text(ctx_cmd))
+
                             for item in parsed_statements:
                                 stmt = item["stmt"]
                                 if not stmt: continue
@@ -1551,8 +1731,9 @@ async def ai_prompt(payload: AIPrompt):
                     if is_investigate and attempt < MAX_RETRIES - 1:
                         investigate_feedback = (
                             f"\n\nThe diagnostic query you generated:\n```sql\n{extracted_sql}\n```\n"
-                            f"Executed successfully and returned these results:\n{json.dumps(execution_results, default=str)[:10000]}\n\n"
-                            f"Now, based on these results, please proceed with completing the user's task or run another investigate query if needed."
+                            f"Executed successfully and returned these results (truncated if large):\n{json.dumps(execution_results, default=str)[:10000]}\n\n"
+                            f"Now, based on these results, you MUST proceed to complete the user's original task: '{payload.prompt}'. "
+                            f"If you need one more investigation, you may, but the goal is to finish the task NOW."
                         )
                         current_prompt += investigate_feedback
                         continue # Feedback loops back to AI
