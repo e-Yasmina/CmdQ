@@ -15,10 +15,30 @@ import SummaryAnalysisViewer from './components/SummaryAnalysisViewer';
 import DataMigrationForm from './components/forms/DataMigrationForm';
 import { apiService } from './services/apiService';
 import { storageService } from './services/storageService';
+import { shortcutService } from './services/shortcutService';
 import ExplorerContextMenu from './components/ExplorerContextMenu';
 import ServerActionModal from './components/ServerActionModal';
 import ProtectionDiagnosisModal from './components/ProtectionDiagnosisModal';
 import PropertiesModal from './components/PropertiesModal';
+import CommandPalette from './components/CommandPalette';
+import ShortcutsModal from './components/ShortcutsModal';
+
+// Better Chevron SVGs
+const ChevronRight = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+);
+
+const ChevronLeft = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+);
+
+const ChevronDown = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+);
+
+const CopyIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+);
 
 function App() {
   const [prompt, setPrompt] = useState("");
@@ -67,6 +87,7 @@ function App() {
   const [savedQueries, setSavedQueries] = useState([]);
   const [savedConversations, setSavedConversations] = useState([]);
   const [showSavedItems, setShowSavedItems] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [protectedItems, setProtectedItems] = useState([]);
 
   // View Mode: 'ai' | 'query'
@@ -94,9 +115,64 @@ function App() {
   // Properties Modal State
   const [propertiesModal, setPropertiesModal] = useState(null); // { entity }
 
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [shortcuts, setShortcuts] = useState(shortcutService.getShortcuts());
+  const [mutationHistory, setMutationHistory] = useState([]); // Array of previous sqlResult states
+
   // Protection Diagnosis
   const [diagnosisTarget, setDiagnosisTarget] = useState(null); // { schema, table }
   const [sessionContext, setSessionContext] = useState([]); // List of SET commands
+
+  const [copyFeedback, setCopyFeedback] = useState(false);
+
+  const handleSaveShortcut = (id, combo, reset = false) => {
+    if (reset) {
+      const defaults = shortcutService.resetShortcuts();
+      setShortcuts(defaults);
+    } else {
+      const updated = shortcutService.saveShortcut(id, combo);
+      setShortcuts({ ...updated });
+    }
+  };
+
+  const handleUndoMutation = () => {
+    if (mutationHistory.length === 0) return;
+    const lastState = mutationHistory[mutationHistory.length - 1];
+    setSqlResult(lastState);
+    setMutationHistory(prev => prev.slice(0, -1));
+  };
+
+  const handleCopyResults = () => {
+    if (!sqlResult) return;
+
+    let textToCopy = "";
+
+    // 1. Check for table data
+    if (sqlResult.data && sqlResult.data.length > 0) {
+      textToCopy = JSON.stringify(sqlResult.data, null, 2);
+    } 
+    // 2. Check for specialized analysis
+    else if (['security_analysis', 'performance_analysis', 'data_analysis', 'summary_analysis'].includes(sqlResult.type)) {
+      // Exclude type and loading from the copy
+      const { type, loading, ...rest } = sqlResult;
+      textToCopy = JSON.stringify(rest, null, 2);
+    }
+    // 3. Check for AI message
+    else if (sqlResult.message) {
+      textToCopy = sqlResult.message;
+    }
+
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        setCopyFeedback(true);
+        setTimeout(() => setCopyFeedback(false), 2000);
+      }).catch(err => {
+        console.error("Failed to copy:", err);
+        alert("Failed to copy to clipboard");
+      });
+    }
+  };
 
   const fetchClis = () => {
     apiService.fetchClis()
@@ -115,6 +191,56 @@ function App() {
   };
 
   useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      // Priority: Command Palette
+      if (shortcutService.matches(e, shortcuts['command-palette'])) {
+        e.preventDefault();
+        setShowCommandPalette(prev => !prev);
+        return;
+      }
+
+      // Sidebar Toggle
+      if (shortcutService.matches(e, shortcuts['toggle-sidebar'])) {
+        e.preventDefault();
+        setSidebarCollapsed(prev => !prev);
+        return;
+      }
+
+      // View Modes
+      if (shortcutService.matches(e, shortcuts['switch-ai'])) {
+        e.preventDefault();
+        setViewMode('ai');
+        return;
+      }
+      if (shortcutService.matches(e, shortcuts['switch-sql'])) {
+        e.preventDefault();
+        setViewMode('query');
+        return;
+      }
+
+      // Actions
+      if (shortcutService.matches(e, shortcuts['add-server'])) {
+        e.preventDefault();
+        setShowConnectionForm(true);
+        return;
+      }
+
+      // Undo Mutation (Ctrl+Z)
+      if (shortcutService.matches(e, shortcuts['undo-mutation'])) {
+        // Only undo if not typing in an input/textarea
+        if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          handleUndoMutation();
+        }
+        return;
+      }
+
+      // Analyses
+      if (shortcutService.matches(e, shortcuts['sec-analysis'])) { e.preventDefault(); launchAiAnalysis('security'); return; }
+      if (shortcutService.matches(e, shortcuts['perf-analysis'])) { e.preventDefault(); launchAiAnalysis('performance'); return; }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+
     const checkBackend = () => {
       fetchClis(); // This also checks connectivity implicitly
       apiService.fetchClis()
@@ -130,7 +256,10 @@ function App() {
     loadSavedConversations();
     loadProtectedItems();
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
   }, []);
 
   const loadProtectedItems = () => {
@@ -828,7 +957,9 @@ function App() {
         <div className="flex flex-col gap-2 w-full mt-1">
           <details className="text-gray-500 text-[11px] group">
             <summary className="cursor-pointer font-bold opacity-70 hover:opacity-100 transition-opacity list-none flex items-center gap-1 w-max">
-              <span className="group-open:rotate-90 transition-transform text-[8px]">▶</span> View Agent Process
+              <span className="group-open:rotate-90 transition-transform flex items-center justify-center text-gray-500">
+                <ChevronRight className="w-2.5 h-2.5" />
+              </span> View Agent Process
             </summary>
             <div className="mt-2 pl-3 border-l-2 border-border/50 font-sans text-gray-400">
               {processParagraphs.join('\n\n')}
@@ -858,16 +989,69 @@ function App() {
 
 
       {/* Left Sidebar (The Explorer) */}
-      <aside className="w-64 bg-panel border-r border-border flex flex-col flex-shrink-0">
-        {/* <div className="p-4 border-b border-border flex flex-col gap-2"> */}
-        <div className="p-4 flex flex-col gap-2">
+      <aside className={`${sidebarCollapsed ? 'w-16' : 'w-64'} bg-panel border-r border-border flex flex-col flex-shrink-0 transition-all duration-300 relative`}>
+        
+        {/* Sidebar Header with Toggle */}
+        <div className={`h-12 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
+          {!sidebarCollapsed && <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Explorer</span>}
           <button
-            onClick={() => setShowConnectionForm(true)}
-            className="w-full bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-background font-bold p-1.5 rounded text-sm transition-all focus:outline-none cursor-pointer"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/10 text-gray-400 hover:text-primary transition-all cursor-pointer"
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            + Add Server
+            {sidebarCollapsed ? <ChevronRight /> : <ChevronLeft />}
           </button>
         </div>
+
+        {sidebarCollapsed ? (
+          <div className="flex-1 flex flex-col items-center py-4 gap-4 overflow-y-auto no-scrollbar">
+            <button
+              onClick={() => setShowConnectionForm(true)}
+              className="w-10 h-10 flex items-center justify-center rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-background transition-all cursor-pointer flex-shrink-0"
+              title="Add Server"
+            >
+              <span className="text-xl">+</span>
+            </button>
+            
+            <div className="w-full flex flex-col items-center gap-2 border-t border-border pt-4">
+              {connections.map(conn => (
+                <button
+                  key={conn.id}
+                  onClick={() => {
+                    setSidebarCollapsed(false);
+                    setActiveConnectionId(conn.id);
+                  }}
+                  className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all cursor-pointer ${activeConnectionId === conn.id ? 'bg-primary/20 text-primary' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
+                  title={conn.config.server_name || conn.id}
+                >
+                  <span className="text-lg">🖥️</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-auto mb-4 border-t border-border pt-4 w-full flex flex-col items-center gap-2">
+              <button
+                onClick={() => {
+                  setSidebarCollapsed(false);
+                  setShowSavedItems(true);
+                }}
+                className="w-10 h-10 flex items-center justify-center rounded-lg text-gray-400 hover:bg-white/5 hover:text-white transition-all cursor-pointer"
+                title="Saved Items"
+              >
+                <span className="text-lg">📁</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="p-4 flex flex-col gap-2">
+              <button
+                onClick={() => setShowConnectionForm(true)}
+                className="w-full bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-background font-bold p-1.5 rounded text-sm transition-all focus:outline-none cursor-pointer"
+              >
+                + Add Server
+              </button>
+            </div>
         <ScrollArea className="flex-1 p-2 overflow-y-auto">
           {connections.length === 0 ? (
             <div className="text-gray-500 text-xs italic opacity-80 text-center mt-4">
@@ -975,10 +1159,12 @@ function App() {
         <div className="p-4 border-t border-border bg-panel/50">
           <button
             onClick={() => setShowSavedItems(!showSavedItems)}
-            className="w-full text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-primary transition-colors flex items-center justify-between px-2 py-1 cursor-pointer"
+            className="w-full text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-primary transition-colors flex items-center justify-between px-2 py-1 cursor-pointer group"
           >
             <span>📁 Saved Items</span>
-            <span>{showSavedItems ? '▼' : '▶'}</span>
+            <span className={`transition-transform duration-200 ${showSavedItems ? 'rotate-180' : ''} text-gray-500 group-hover:text-primary`}>
+              <ChevronDown />
+            </span>
           </button>
 
           {showSavedItems && (
@@ -1051,6 +1237,8 @@ function App() {
             </div>
           )}
         </div>
+          </>
+        )}
       </aside>
 
       {/* Main Viewport */}
@@ -1059,7 +1247,7 @@ function App() {
         {/* Main Header / View Toggle */}
         <div className="border-b border-border bg-panel flex flex-col justify-between items-start">
           {/* Tab Bar */}
-          <div className="flex w-full bg-background/50 border-b border-border overflow-x-auto min-h-[36px] no-scrollbar">
+          <ScrollArea className="flex w-full bg-background/50 border-b border-border overflow-x-auto min-h-[36px]">
             {openTabs.length === 0 && (
               <div className="px-4 py-2 text-xs font-bold text-gray-500 italic">No workspace open. Select a database from the explorer.</div>
             )}
@@ -1069,14 +1257,14 @@ function App() {
                 <div
                   key={tabId}
                   onClick={() => handleDbChange(tConn, tDb)}
-                  className={`px-4 py-2 text-xs font-bold border-r border-border cursor-pointer flex items-center gap-2 transition-colors ${activeTabId === tabId ? 'bg-panel text-primary border-t-2 border-t-primary' : 'hover:bg-panel text-gray-500 hover:text-gray-300'}`}
+                  className={`px-4 py-2 text-xs font-bold border-r border-border cursor-pointer flex items-center gap-2 transition-colors flex-shrink-0 ${activeTabId === tabId ? 'bg-panel text-primary border-t-2 border-t-primary' : 'hover:bg-panel text-gray-500 hover:text-gray-300'}`}
                 >
                   💾 {tDb} <span className="text-[10px] opacity-40 font-normal truncate max-w-[100px]">{tConn}</span>
                   <div onClick={(e) => { e.stopPropagation(); closeTab(tabId); }} className="hover:text-red-400 ml-2 rounded p-[1px] hover:bg-white/10 text-gray-400 leading-none">✕</div>
                 </div>
               )
             })}
-          </div>
+          </ScrollArea>
 
           <div className="flex justify-between items-center w-full p-2 px-4 shadow-[0_4px_10px_rgba(0,0,0,0.1)] z-10">
             <div className="flex items-center gap-4">
@@ -1312,6 +1500,18 @@ function App() {
                 >
                   🌐 Translate View
                 </button>
+                <button
+                  onClick={handleCopyResults}
+                  disabled={!sqlResult || (sqlResult.loading)}
+                  className={`border p-1.5 rounded transition-all cursor-pointer flex items-center justify-center disabled:opacity-50 ${copyFeedback ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-panel border-border hover:bg-white/5 text-textPrimary'}`}
+                  title="Copy results (JSON or Text)"
+                >
+                  {copyFeedback ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  ) : (
+                    <CopyIcon />
+                  )}
+                </button>
               </div>
             )}
           </div>
@@ -1341,6 +1541,7 @@ function App() {
                     }
                   }}
                   onLocalMutation={(type, payload) => {
+                    setMutationHistory(prev => [...prev, JSON.parse(JSON.stringify(sqlResult))]);
                     setSqlResult(prev => {
                       if (!prev || !prev.data) return prev;
                       const data = [...prev.data];
@@ -1385,8 +1586,11 @@ function App() {
         </div>
       </main>
 
-      <div className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui pointer-events-none">
-        Press <kbd className="bg-panel border border-border rounded px-1">Ctrl+K</kbd> for Command Palette
+      <div 
+        onClick={() => setShowCommandPalette(true)}
+        className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui cursor-pointer hover:text-primary transition-colors select-none"
+      >
+        Press <kbd className="bg-panel border border-border rounded px-1 ml-1 mr-1">Ctrl+K</kbd> for Command Palette
       </div>
 
       {showCreateDbModal && activeConn && (
@@ -1466,6 +1670,43 @@ function App() {
           onClose={() => setPropertiesModal(null)}
         />
       )}
+
+      <CommandPalette
+        isOpen={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        commands={[
+          { id: 'add-server', name: 'Add Server Connection', category: 'Connections', icon: '🖥️', shortcut: shortcuts['add-server'], action: () => setShowConnectionForm(true) },
+          { id: 'add-api', name: 'Register API Model', category: 'AI', icon: '🤖', action: () => setShowApiModal(true) },
+          { id: 'switch-ai', name: 'Switch to AI Prompt Mode', category: 'View', icon: '💬', shortcut: shortcuts['switch-ai'], action: () => setViewMode('ai') },
+          { id: 'switch-sql', name: 'Switch to SQL Editor Mode', category: 'View', icon: '📜', shortcut: shortcuts['switch-sql'], action: () => setViewMode('query') },
+          { id: 'toggle-sidebar', name: 'Toggle Sidebar', category: 'View', icon: '↔️', shortcut: shortcuts['toggle-sidebar'], action: () => setSidebarCollapsed(!sidebarCollapsed) },
+          { id: 'sec-analysis', name: 'Run Security Analysis', category: 'Analysis', icon: '🔒', shortcut: shortcuts['sec-analysis'], action: () => launchAiAnalysis('security') },
+          { id: 'perf-analysis', name: 'Run Performance Analysis', category: 'Analysis', icon: '⚡', shortcut: shortcuts['perf-analysis'], action: () => launchAiAnalysis('performance') },
+          { id: 'data-analysis', name: 'Run Data Analysis', category: 'Analysis', icon: '📊', action: () => launchAiAnalysis('data') },
+          { id: 'sum-analysis', name: 'Run Summary Analysis', category: 'Analysis', icon: '📝', action: () => launchAiAnalysis('summary') },
+          { id: 'etl-mapping', name: 'Open ETL / Data Mapping', category: 'Data', icon: '🔄', action: () => setShowMigrationModal(true) },
+          { id: 'export-db', name: 'Export Active Database', category: 'Data', icon: '📤', action: () => activeDatabase ? setShowExportDbModal(true) : alert("Please select a database first") },
+          { id: 'import-db', name: 'Import to Active Database', category: 'Data', icon: '📥', action: () => activeDatabase ? setShowImportDbModal(true) : alert("Please select a database first") },
+          { id: 'clear-chat', name: 'Clear Chat History', category: 'AI', icon: '🧹', action: () => setChatHistory([]) },
+          { id: 'undo-mutation', name: 'Undo Last Mutation', category: 'Data', icon: '↩️', shortcut: shortcuts['undo-mutation'], action: handleUndoMutation },
+          { id: 'config-shortcuts', name: 'Configure Keyboard Shortcuts', category: 'System', icon: '⌨️', action: () => setShowShortcutsModal(true) },
+          { id: 'save-query', name: 'Save Current Query', category: 'Data', icon: '💾', action: () => {
+            if (viewMode === 'query' && sqlQuery.trim()) {
+              const name = window.prompt("Enter a name for this query:");
+              if (name) handleSaveQuery(sqlQuery, name);
+            } else {
+              alert("Switch to SQL Editor and write a query first");
+            }
+          }},
+        ]}
+      />
+
+      <ShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+        shortcuts={shortcuts}
+        onSave={handleSaveShortcut}
+      />
 
     </div>
   );
