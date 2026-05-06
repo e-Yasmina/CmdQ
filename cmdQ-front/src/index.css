@@ -31,6 +31,30 @@
     background-color: theme('colors.secondary');
   }
 
+  /* Target CodeMirror scroller for custom scrollbars */
+  .custom-cm .cm-scroller {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.border') transparent;
+  }
+
+  .custom-cm .cm-scroller::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-cm .cm-scroller::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-cm .cm-scroller::-webkit-scrollbar-thumb {
+    background-color: theme('colors.border');
+    border-radius: 4px;
+  }
+
+  .custom-cm .cm-scroller::-webkit-scrollbar-thumb:hover {
+    background-color: theme('colors.secondary');
+  }
+
   .custom-cm .cm-editor.cm-focused {
     outline: none !important;
   }

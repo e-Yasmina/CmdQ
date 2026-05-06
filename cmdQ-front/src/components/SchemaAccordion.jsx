@@ -1,5 +1,9 @@
 import { useState } from 'react';
 
+const ChevronRight = ({ className }) => (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+);
+
 const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSchemaProtected, getIsTableProtected }) => {
     const [isOpen, setIsOpen] = useState(false);
     const tableNames = Object.keys(tables);
@@ -12,7 +16,10 @@ const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSc
                 onContextMenu={(e) => onContextMenu && onContextMenu(e, 'schema', schemaName)}
                 title={schemaName}
             >
-                <span className="mr-2 text-sm transition-transform duration-200">
+                <span className={`mr-1.5 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''} text-gray-500 group-hover:text-primary`}>
+                    <ChevronRight className="w-3 h-3" />
+                </span>
+                <span className="mr-2 text-sm">
                     {isOpen ? '📂' : '📁'}
                 </span>
                 <span className="truncate flex-1 flex items-center gap-1">
