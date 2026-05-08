@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ScrollArea from './components/ScrollArea';
 import SchemaAccordion from './components/SchemaAccordion';
 import ConnectionForm from './components/forms/ConnectionForm';
@@ -25,19 +25,19 @@ import ShortcutsModal from './components/ShortcutsModal';
 
 // Better Chevron SVGs
 const ChevronRight = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
 );
 
 const ChevronLeft = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
 );
 
 const ChevronDown = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
 );
 
 const CopyIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
 );
 
 function App() {
@@ -120,11 +120,61 @@ function App() {
   const [shortcuts, setShortcuts] = useState(shortcutService.getShortcuts());
   const [mutationHistory, setMutationHistory] = useState([]); // Array of previous sqlResult states
 
+  // Resizable Panels State
+  const [sidebarWidth, setSidebarWidth] = useState(256);
+  const [topPanelHeight, setTopPanelHeight] = useState(300);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isResizingTopPanel, setIsResizingTopPanel] = useState(false);
+
   // Protection Diagnosis
   const [diagnosisTarget, setDiagnosisTarget] = useState(null); // { schema, table }
   const [sessionContext, setSessionContext] = useState([]); // List of SET commands
 
   const [copyFeedback, setCopyFeedback] = useState(false);
+
+  const startResizingSidebar = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingSidebar(true);
+  }, []);
+
+  const startResizingTopPanel = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingTopPanel(true);
+  }, []);
+
+  const stopResizing = useCallback(() => {
+    setIsResizingSidebar(false);
+    setIsResizingTopPanel(false);
+  }, []);
+
+  const resize = useCallback((e) => {
+    if (isResizingSidebar) {
+      const newWidth = e.clientX;
+      if (newWidth > 48 && newWidth < 600) {
+        setSidebarWidth(newWidth);
+      }
+    }
+    if (isResizingTopPanel) {
+      const newHeight = e.clientY - 84; // Subtract header height approximately
+      if (newHeight > 100 && newHeight < window.innerHeight - 200) {
+        setTopPanelHeight(newHeight);
+      }
+    }
+  }, [isResizingSidebar, isResizingTopPanel]);
+
+  useEffect(() => {
+    if (isResizingSidebar || isResizingTopPanel) {
+      window.addEventListener('mousemove', resize);
+      window.addEventListener('mouseup', stopResizing);
+    } else {
+      window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mouseup', stopResizing);
+    }
+    return () => {
+      window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mouseup', stopResizing);
+    };
+  }, [isResizingSidebar, isResizingTopPanel, resize, stopResizing]);
 
   const handleSaveShortcut = (id, combo, reset = false) => {
     if (reset) {
@@ -151,7 +201,7 @@ function App() {
     // 1. Check for table data
     if (sqlResult.data && sqlResult.data.length > 0) {
       textToCopy = JSON.stringify(sqlResult.data, null, 2);
-    } 
+    }
     // 2. Check for specialized analysis
     else if (['security_analysis', 'performance_analysis', 'data_analysis', 'summary_analysis'].includes(sqlResult.type)) {
       // Exclude type and loading from the copy
@@ -989,8 +1039,18 @@ function App() {
 
 
       {/* Left Sidebar (The Explorer) */}
-      <aside className={`${sidebarCollapsed ? 'w-16' : 'w-64'} bg-panel border-r border-border flex flex-col flex-shrink-0 transition-all duration-300 relative`}>
-        
+      <aside
+        style={{ width: sidebarCollapsed ? '64px' : `${sidebarWidth}px` }}
+        className={`bg-panel border-r border-border flex flex-col flex-shrink-0 relative ${isResizingSidebar ? '' : 'transition-all duration-300'}`}
+      >
+        {/* Horizontal Resizer */}
+        {!sidebarCollapsed && (
+          <div
+            className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors z-[60] absolute right-0 top-0 bottom-0"
+            onMouseDown={startResizingSidebar}
+          />
+        )}
+
         {/* Sidebar Header with Toggle */}
         <div className={`h-12 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
           {!sidebarCollapsed && <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Explorer</span>}
@@ -1012,7 +1072,7 @@ function App() {
             >
               <span className="text-xl">+</span>
             </button>
-            
+
             <div className="w-full flex flex-col items-center gap-2 border-t border-border pt-4">
               {connections.map(conn => (
                 <button
@@ -1052,191 +1112,191 @@ function App() {
                 + Add Server
               </button>
             </div>
-        <ScrollArea className="flex-1 p-2 overflow-y-auto">
-          {connections.length === 0 ? (
-            <div className="text-gray-500 text-xs italic opacity-80 text-center mt-4">
-              Not Connected
-            </div>
-          ) : (
-            connections.map(conn => (
-              <div key={conn.id} className="mb-4">
-                <div
-                  className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
-                  onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'server', server: conn, isProtected: protectedItems.includes(conn.id) })}
-                >
-                  <span className="truncate pr-4 flex items-center gap-1">
-                    {protectedItems.includes(conn.id) && <span className="text-red-500" title="Protected">🛡️</span>}
-                    🖥️ {conn.config.server_name || conn.id}
-                  </span>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRefreshConnection(conn.id);
-                      }}
-                      className="text-gray-400 hover:text-primary cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
-                      title="Refresh Databases & Schema"
-                    >
-                      🔄
-                    </button>
-                    <button
-                      onClick={() => {
-                        setActiveConnectionId(conn.id);
-                        setShowCreateDbModal(true);
-                      }}
-                      className="text-primary hover:text-white cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
-                      title="Create Database"
-                    >
-                      + DB
-                    </button>
-                  </div>
+            <ScrollArea className="flex-1 p-2 overflow-y-auto">
+              {connections.length === 0 ? (
+                <div className="text-gray-500 text-xs italic opacity-80 text-center mt-4">
+                  Not Connected
                 </div>
-                <div className="space-y-0.5 mt-2">
-                  {conn.databases.map(db => {
-                    const isActive = activeConnectionId === conn.id && activeDatabase === db;
-                    return (
-                      <div key={db} className="ml-2">
-                        <div
-                          className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
-                          onClick={() => handleDbChange(conn.id, db)}
-                          onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: protectedItems.includes(`${conn.id}::${db}`) })}
+              ) : (
+                connections.map(conn => (
+                  <div key={conn.id} className="mb-4">
+                    <div
+                      className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
+                      onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'server', server: conn, isProtected: protectedItems.includes(conn.id) })}
+                    >
+                      <span className="truncate pr-4 flex items-center gap-1">
+                        {protectedItems.includes(conn.id) && <span className="text-red-500" title="Protected">🛡️</span>}
+                        🖥️ {conn.config.server_name || conn.id}
+                      </span>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRefreshConnection(conn.id);
+                          }}
+                          className="text-gray-400 hover:text-primary cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
+                          title="Refresh Databases & Schema"
                         >
-                          <div className="flex items-center gap-2 truncate pr-2">
-                            {protectedItems.includes(`${conn.id}::${db}`) && <span className="text-red-500" title="Protected">🛡️</span>}
-                            💾 <span className="truncate">{db}</span>
-                          </div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDropDatabase(conn.id, db);
-                              }}
-                              className="text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
-                              title="Delete Database"
+                          🔄
+                        </button>
+                        <button
+                          onClick={() => {
+                            setActiveConnectionId(conn.id);
+                            setShowCreateDbModal(true);
+                          }}
+                          className="text-primary hover:text-white cursor-pointer px-1 rounded hover:bg-white/10 transition-colors"
+                          title="Create Database"
+                        >
+                          + DB
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-0.5 mt-2">
+                      {conn.databases.map(db => {
+                        const isActive = activeConnectionId === conn.id && activeDatabase === db;
+                        return (
+                          <div key={db} className="ml-2">
+                            <div
+                              className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                              onClick={() => handleDbChange(conn.id, db)}
+                              onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: protectedItems.includes(`${conn.id}::${db}`) })}
                             >
-                              🗑️
-                            </button>
-                          </div>
-                        </div>
-                        {isActive && (
-                          <div className="ml-4 mt-2 mb-2">
-                            {conn.schemas[db] ? (
-                              <ul className="space-y-1 text-sm border-l border-border/50 pl-2">
-                                {Object.entries(conn.schemas[db]).map(([schemaName, tables]) => (
-                                  <SchemaAccordion
-                                    key={schemaName}
-                                    schemaName={schemaName}
-                                    tables={tables}
-                                    onTableClick={(s, t) => handleTableClick(conn.id, db, s, t)}
-                                    isSchemaProtected={protectedItems.includes(`${conn.id}::${db}::${schemaName}`)}
-                                    getIsTableProtected={(t) => protectedItems.includes(`${conn.id}::${db}::${schemaName}::${t}`)}
-                                    onContextMenu={(e, type, s, t) => handleExplorerContextMenu(e, {
-                                      type,
-                                      server: conn,
-                                      database: db,
-                                      schemaName: s,
-                                      tableName: t,
-                                      isProtected: type === 'schema'
-                                        ? protectedItems.includes(`${conn.id}::${db}::${s}`)
-                                        : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`)
-                                    })}
-                                  />
-                                ))}
-                              </ul>
-                            ) : (
-                              <div className="text-gray-500 text-xs italic ml-2">Loading schema...</div>
+                              <div className="flex items-center gap-2 truncate pr-2">
+                                {protectedItems.includes(`${conn.id}::${db}`) && <span className="text-red-500" title="Protected">🛡️</span>}
+                                💾 <span className="truncate">{db}</span>
+                              </div>
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDropDatabase(conn.id, db);
+                                  }}
+                                  className="text-gray-500 hover:text-red-400 transition-all font-bold px-1 rounded focus:outline-none"
+                                  title="Delete Database"
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </div>
+                            {isActive && (
+                              <div className="ml-4 mt-2 mb-2">
+                                {conn.schemas[db] ? (
+                                  <ul className="space-y-1 text-sm border-l border-border/50 pl-2">
+                                    {Object.entries(conn.schemas[db]).map(([schemaName, tables]) => (
+                                      <SchemaAccordion
+                                        key={schemaName}
+                                        schemaName={schemaName}
+                                        tables={tables}
+                                        onTableClick={(s, t) => handleTableClick(conn.id, db, s, t)}
+                                        isSchemaProtected={protectedItems.includes(`${conn.id}::${db}::${schemaName}`)}
+                                        getIsTableProtected={(t) => protectedItems.includes(`${conn.id}::${db}::${schemaName}::${t}`)}
+                                        onContextMenu={(e, type, s, t) => handleExplorerContextMenu(e, {
+                                          type,
+                                          server: conn,
+                                          database: db,
+                                          schemaName: s,
+                                          tableName: t,
+                                          isProtected: type === 'schema'
+                                            ? protectedItems.includes(`${conn.id}::${db}::${s}`)
+                                            : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`)
+                                        })}
+                                      />
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className="text-gray-500 text-xs italic ml-2">Loading schema...</div>
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </ScrollArea>
+            <div className="p-4 border-t border-border bg-panel/50">
+              <button
+                onClick={() => setShowSavedItems(!showSavedItems)}
+                className="w-full text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-primary transition-colors flex items-center justify-between px-2 py-1 cursor-pointer group"
+              >
+                <span>📁 Saved Items</span>
+                <span className={`transition-transform duration-200 ${showSavedItems ? 'rotate-180' : ''} text-gray-500 group-hover:text-primary`}>
+                  <ChevronDown />
+                </span>
+              </button>
+
+              {showSavedItems && (
+                <div className="mt-2 space-y-4">
+                  {/* Saved Queries */}
+                  <div>
+                    <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Saved Queries</div>
+                    <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
+                      {savedQueries.length === 0 ? (
+                        <div className="text-[10px] text-gray-600 italic px-4">No saved queries</div>
+                      ) : (
+                        savedQueries.map(q => (
+                          <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                            <span
+                              className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                              title={q.query}
+                              onClick={() => {
+                                setSqlQuery(q.query);
+                                setActiveConnectionId(q.connectionId);
+                                setActiveDatabase(q.database);
+                                setViewMode('query');
+                              }}
+                            >
+                              📜 {q.name}
+                            </span>
+                            <button
+                              onClick={() => storageService.deleteItem('queries', q.id).then(() => setSavedQueries(prev => prev.filter(x => x.id !== q.id)))}
+                              className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </ScrollArea>
+                  </div>
+
+                  {/* Saved Conversations */}
+                  <div>
+                    <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Conversations</div>
+                    <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
+                      {savedConversations.length === 0 ? (
+                        <div className="text-[10px] text-gray-600 italic px-4">No saved chats</div>
+                      ) : (
+                        savedConversations.map(c => (
+                          <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                            <span
+                              className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                              title={c.title}
+                              onClick={() => {
+                                setChatHistory(c.history);
+                                setActiveConnectionId(c.connectionId);
+                                setActiveDatabase(c.database);
+                                setViewMode('ai');
+                              }}
+                            >
+                              💬 {c.title}
+                            </span>
+                            <button
+                              onClick={() => storageService.deleteItem('conversations', c.id).then(() => setSavedConversations(prev => prev.filter(x => x.id !== c.id)))}
+                              className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </ScrollArea>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
-        </ScrollArea>
-        <div className="p-4 border-t border-border bg-panel/50">
-          <button
-            onClick={() => setShowSavedItems(!showSavedItems)}
-            className="w-full text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-primary transition-colors flex items-center justify-between px-2 py-1 cursor-pointer group"
-          >
-            <span>📁 Saved Items</span>
-            <span className={`transition-transform duration-200 ${showSavedItems ? 'rotate-180' : ''} text-gray-500 group-hover:text-primary`}>
-              <ChevronDown />
-            </span>
-          </button>
-
-          {showSavedItems && (
-            <div className="mt-2 space-y-4">
-              {/* Saved Queries */}
-              <div>
-                <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Saved Queries</div>
-                <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
-                  {savedQueries.length === 0 ? (
-                    <div className="text-[10px] text-gray-600 italic px-4">No saved queries</div>
-                  ) : (
-                    savedQueries.map(q => (
-                      <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
-                        <span
-                          className="text-xs text-gray-400 truncate flex-1 hover:text-white"
-                          title={q.query}
-                          onClick={() => {
-                            setSqlQuery(q.query);
-                            setActiveConnectionId(q.connectionId);
-                            setActiveDatabase(q.database);
-                            setViewMode('query');
-                          }}
-                        >
-                          📜 {q.name}
-                        </span>
-                        <button
-                          onClick={() => storageService.deleteItem('queries', q.id).then(() => setSavedQueries(prev => prev.filter(x => x.id !== q.id)))}
-                          className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </ScrollArea>
-              </div>
-
-              {/* Saved Conversations */}
-              <div>
-                <div className="text-[10px] text-secondary font-bold uppercase mb-1 px-2">Conversations</div>
-                <ScrollArea className="max-h-32 overflow-y-auto space-y-1">
-                  {savedConversations.length === 0 ? (
-                    <div className="text-[10px] text-gray-600 italic px-4">No saved chats</div>
-                  ) : (
-                    savedConversations.map(c => (
-                      <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
-                        <span
-                          className="text-xs text-gray-400 truncate flex-1 hover:text-white"
-                          title={c.title}
-                          onClick={() => {
-                            setChatHistory(c.history);
-                            setActiveConnectionId(c.connectionId);
-                            setActiveDatabase(c.database);
-                            setViewMode('ai');
-                          }}
-                        >
-                          💬 {c.title}
-                        </span>
-                        <button
-                          onClick={() => storageService.deleteItem('conversations', c.id).then(() => setSavedConversations(prev => prev.filter(x => x.id !== c.id)))}
-                          className="opacity-0 group-hover:opacity-100 text-[10px] text-red-500/50 hover:text-red-500"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </ScrollArea>
-              </div>
+              )}
             </div>
-          )}
-        </div>
           </>
         )}
       </aside>
@@ -1357,7 +1417,7 @@ function App() {
                 {sessionContext.length > 0 && (
                   <div className="flex items-center gap-1 bg-cyan-500/10 border border-cyan-500/40 rounded px-2 py-0.5 ml-2">
                     <span className="text-cyan-400 text-[10px] whitespace-nowrap">🔐 {sessionContext.length} Context Cmds</span>
-                    <button 
+                    <button
                       onClick={() => setSessionContext([])}
                       className="text-cyan-400 hover:text-white text-xs font-bold px-1 ml-1"
                       title="Clear session context (RLS/ERLS bypass commands)"
@@ -1372,7 +1432,15 @@ function App() {
         </div>
 
         {viewMode === 'ai' && (
-          <div className="h-[30%] border-b border-border flex flex-col bg-panel p-4 flex-shrink-0 min-h-[150px]">
+          <div
+            style={{ height: `${topPanelHeight}px` }}
+            className="border-b border-border flex flex-col bg-panel p-4 flex-shrink-0 min-h-[150px] relative"
+          >
+            {/* Vertical Resizer */}
+            <div
+              className="h-1 cursor-row-resize hover:bg-primary/50 transition-colors z-[60] absolute left-0 right-0 bottom-0"
+              onMouseDown={startResizingTopPanel}
+            />
             <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
               <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
               {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
@@ -1411,7 +1479,15 @@ function App() {
         )}
 
         {viewMode === 'query' && (
-          <div className="h-[30%] border-b border-border flex flex-col bg-panel flex-shrink-0 min-h-[150px]">
+          <div
+            style={{ height: `${topPanelHeight}px` }}
+            className="border-b border-border flex flex-col bg-panel flex-shrink-0 min-h-[150px] relative"
+          >
+            {/* Vertical Resizer */}
+            <div
+              className="h-1 cursor-row-resize hover:bg-primary/50 transition-colors z-[60] absolute left-0 right-0 bottom-0"
+              onMouseDown={startResizingTopPanel}
+            />
             <QueryEditor
               value={sqlQuery}
               onChange={setSqlQuery}
@@ -1507,7 +1583,7 @@ function App() {
                   title="Copy results (JSON or Text)"
                 >
                   {copyFeedback ? (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
                   ) : (
                     <CopyIcon />
                   )}
@@ -1586,7 +1662,7 @@ function App() {
         </div>
       </main>
 
-      <div 
+      <div
         onClick={() => setShowCommandPalette(true)}
         className="absolute bottom-2 right-4 text-xs text-gray-500 font-ui cursor-pointer hover:text-primary transition-colors select-none"
       >
@@ -1690,14 +1766,16 @@ function App() {
           { id: 'clear-chat', name: 'Clear Chat History', category: 'AI', icon: '🧹', action: () => setChatHistory([]) },
           { id: 'undo-mutation', name: 'Undo Last Mutation', category: 'Data', icon: '↩️', shortcut: shortcuts['undo-mutation'], action: handleUndoMutation },
           { id: 'config-shortcuts', name: 'Configure Keyboard Shortcuts', category: 'System', icon: '⌨️', action: () => setShowShortcutsModal(true) },
-          { id: 'save-query', name: 'Save Current Query', category: 'Data', icon: '💾', action: () => {
-            if (viewMode === 'query' && sqlQuery.trim()) {
-              const name = window.prompt("Enter a name for this query:");
-              if (name) handleSaveQuery(sqlQuery, name);
-            } else {
-              alert("Switch to SQL Editor and write a query first");
+          {
+            id: 'save-query', name: 'Save Current Query', category: 'Data', icon: '💾', action: () => {
+              if (viewMode === 'query' && sqlQuery.trim()) {
+                const name = window.prompt("Enter a name for this query:");
+                if (name) handleSaveQuery(sqlQuery, name);
+              } else {
+                alert("Switch to SQL Editor and write a query first");
+              }
             }
-          }},
+          },
         ]}
       />
 
