@@ -214,6 +214,16 @@ export const apiService = {
         return data;
     },
 
+    scanImport: async (formData) => {
+        const res = await fetch(`${API_BASE_URL}/import/scan`, {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to scan import file");
+        return data;
+    },
+
     migrateData: async (payload) => {
         const res = await fetch(`${API_BASE_URL}/etl/migrate`, {
             method: "POST",

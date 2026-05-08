@@ -5,7 +5,29 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
     const [format, setFormat] = useState(isDatabase ? 'sql' : 'csv');
     const [selectedFile, setSelectedFile] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [scanResult, setScanResult] = useState(null);
     const fileInputRef = useRef();
+
+    const handleScan = async () => {
+        if (!selectedFile) return;
+        setIsLoading(true);
+        setScanResult(null);
+        try {
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            formData.append('format', format);
+            const res = await apiService.scanImport(formData);
+            if (res.status === 'success') {
+                setScanResult(res.report);
+            } else {
+                alert(res.message);
+            }
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleImport = async () => {
         if (!selectedFile) {
@@ -88,18 +110,57 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
                 <div className="flex gap-2 mt-2">
                     <button
                         onClick={onCancel}
-                        className="bg-red-500/20 border border-red-500/50 text-red-400 font-bold py-2 px-4 rounded hover:bg-red-500/30 transition-all w-1/3 cursor-pointer"
+                        className="bg-red-500/20 border border-red-500/50 text-red-400 font-bold py-2 px-4 rounded hover:bg-red-500/30 transition-all w-1/4 cursor-pointer text-sm"
                     >
                         Cancel
                     </button>
                     <button
+                        onClick={handleScan}
+                        disabled={isLoading || !selectedFile}
+                        className="bg-blue-500/20 border border-blue-500/50 text-blue-400 font-bold py-2 px-4 rounded hover:bg-blue-500/30 disabled:opacity-50 transition-all w-1/4 cursor-pointer text-sm"
+                    >
+                        Scan
+                    </button>
+                    <button
                         onClick={handleImport}
                         disabled={isLoading || !selectedFile}
-                        className="bg-primary text-background font-bold py-2 px-4 rounded hover:brightness-110 disabled:opacity-50 transition-all flex-1 cursor-pointer"
+                        className="bg-primary text-background font-bold py-2 px-4 rounded hover:brightness-110 disabled:opacity-50 transition-all flex-1 cursor-pointer text-sm"
                     >
-                        {isLoading ? "Importing..." : "Upload & Run"}
+                        {isLoading ? "Running..." : "Run Import"}
                     </button>
                 </div>
+
+                {scanResult && (
+                    <div className="mt-4 p-3 bg-background/50 border border-border rounded text-xs flex flex-col gap-2 max-h-40 overflow-y-auto">
+                        <div className="font-bold text-blue-400">Pre-Import Scan Report:</div>
+                        <div className="flex justify-between">
+                            <span>Expected Rows:</span>
+                            <span className="text-primary">{scanResult.row_count}</span>
+                        </div>
+                        {scanResult.table_count > 0 && (
+                            <div className="flex justify-between">
+                                <span>Tables to Create:</span>
+                                <span className="text-primary">{scanResult.table_count}</span>
+                            </div>
+                        )}
+                        {scanResult.tables_affected.length > 0 && (
+                            <div>
+                                <div className="text-gray-400">Affected Tables:</div>
+                                <div className="pl-2">{scanResult.tables_affected.join(', ')}</div>
+                            </div>
+                        )}
+                        {scanResult.destructive_actions.length > 0 && (
+                            <div className="text-red-400 font-bold">
+                                ⚠️ Warnings:
+                                <ul className="list-disc pl-4 font-normal">
+                                    {scanResult.destructive_actions.map((act, i) => (
+                                        <li key={i}>{act}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );

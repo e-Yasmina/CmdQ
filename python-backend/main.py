@@ -4,11 +4,36 @@ from pydantic import BaseModel
 from typing import Dict, Any, List
 import io
 import csv
+import logging
+import tempfile
+import os
+import subprocess
+import shutil
+import json
+import socket
+import urllib.parse
+import urllib.request
+import re
+import time
+import traceback
+import uvicorn
+from database import get_db_connection
+from sqlalchemy import text, create_engine, MetaData, Table, select
+from sqlalchemy.schema import CreateTable
+from persistence_manager import storage
+from fastapi.middleware.cors import CORSMiddleware
+from process_manager import manager as process_manager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("cmdq-backend")
 
 app = FastAPI(title="Antigravity Engine Sidecar")
-from persistence_manager import storage
 
-from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -165,7 +190,6 @@ async def create_database(req: CreateDatabaseRequest):
     """Creates a new database."""
     try:
         from sqlalchemy import create_engine
-        import urllib.parse
         
         cfg = req.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
@@ -195,7 +219,6 @@ async def drop_database(req: DropDatabaseRequest):
     """Drops an existing database."""
     try:
         from sqlalchemy import create_engine
-        import urllib.parse
         
         cfg = req.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
@@ -393,7 +416,6 @@ async def analyze_protection(req: ProtectionAnalysisRequest):
                         
                         qual = p_dict["qual"] or ""
                         if "current_setting" in qual:
-                            import re
                             # Match current_setting('var', ...) or current_setting('var')
                             match = re.search(r"current_setting\(\s*'([^']+)'", qual)
                             if match:
@@ -501,10 +523,6 @@ async def get_table_data(req: TableDataRequest):
     except Exception as e:
         return {"status": "error", "message": f"Failed to fetch table data: {str(e)}"}
 
-import shutil
-import json
-import os
-
 MODELS_FILE = "registered_models.json"
 
 def get_registered_models():
@@ -519,6 +537,7 @@ def get_registered_models():
 def save_registered_models(models):
     with open(MODELS_FILE, "w", encoding="utf-8") as f:
         json.dump(models, f, indent=4)
+
 @app.get("/ai/detect_cli")
 async def detect_cli():
     """Detects installed AI CLI tools in the environment."""
@@ -586,10 +605,6 @@ async def register_api_model(m: RegisterAPIModel):
     return {"status": "success", "message": "Registered new API Model."}
 
 
-import subprocess
-import os
-import urllib.parse
-import urllib.request
 from process_manager import manager as process_manager
 
 class CLILaunchDetails(BaseModel):
@@ -623,7 +638,6 @@ async def launch_cli(details: CLILaunchDetails):
         # Windows suppresses new console windows. We must use 
         # CREATE_NEW_CONSOLE (0x10) + DETACHED_PROCESS (0x8) to force visibility.
         # We also write a small .bat launcher to handle .cmd path resolution.
-        import tempfile
         bat_content = f'@echo off\ntitle CmdQ Debug Console\n"{cmd_to_run}"\npause\n'
         bat_file = os.path.join(tempfile.gettempdir(), "cmdq_debug_launch.bat")
         with open(bat_file, "w") as f:
@@ -637,7 +651,6 @@ async def launch_cli(details: CLILaunchDetails):
         
         return {"status": "success", "message": f"Successfully spawned debug console for '{cmd_to_run}'"}
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Failed to launch debug terminal: {str(e)}")
 
@@ -1780,6 +1793,85 @@ class ExportDatabaseRequest(BaseModel):
     db_config: ConnectionDetails
     format: str = "sql"
 
+def generate_native_sql_dump(cfg, temp_path):
+    """Generates a complete SQL dump using SQLAlchemy reflection (no external binaries needed)."""
+    try:
+        logger.info(f"Starting native SQL export for {cfg.database}...")
+        
+        # Re-create engine to ensure we have a fresh bind for reflection
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+        if cfg.db_type == "postgres":
+            url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+        else:
+            url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+            
+        engine = create_engine(url)
+        metadata = MetaData()
+        
+        # Reflect all tables
+        logger.info("Reflecting database schema...")
+        metadata.reflect(bind=engine)
+        
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(f"-- Native SQL Dump generated by CmdQ\n")
+            f.write(f"-- Database: {cfg.database} ({cfg.db_type})\n")
+            f.write(f"-- Generated at: {time.ctime()}\n")
+            f.write(f"-- ------------------------------------------------------\n\n")
+            
+            if cfg.db_type == "postgres":
+                f.write("SET statement_timeout = 0;\nSET lock_timeout = 0;\nSET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nSELECT pg_catalog.set_config('search_path', '', false);\nSET check_function_bodies = false;\nSET xmloption = content;\nSET client_min_messages = warning;\nSET row_security = off;\n\n")
+
+            for table_name in metadata.tables:
+                logger.info(f"Exporting table structure: {table_name}")
+                table = metadata.tables[table_name]
+                
+                # 1. Create Table statement
+                create_stmt = str(CreateTable(table).compile(engine))
+                f.write(f"-- Structure for table {table_name}\n")
+                f.write(f"DROP TABLE IF EXISTS {table_name} CASCADE;\n")
+                f.write(f"{create_stmt.strip()};\n\n")
+                
+                # 2. Insert statements
+                logger.info(f"Exporting table data: {table_name}")
+                with engine.connect() as conn:
+                    # Use a basic select to fetch all data
+                    res = conn.execute(select(table))
+                    keys = list(res.keys())
+                    
+                    count = 0
+                    for row in res:
+                        row_dict = dict(zip(keys, row))
+                        cols_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in keys])
+                        
+                        # Helper for SQL value formatting
+                        vals = []
+                        for v in row_dict.values():
+                            if v is None:
+                                vals.append("NULL")
+                            elif isinstance(v, (int, float)):
+                                vals.append(str(v))
+                            elif isinstance(v, bool):
+                                vals.append("TRUE" if v else "FALSE")
+                            else:
+                                # Stringify and escape single quotes
+                                escaped = str(v).replace("'", "''")
+                                vals.append(f"'{escaped}'")
+                        
+                        vals_str = ", ".join(vals)
+                        f.write(f"INSERT INTO {table_name} ({cols_str}) VALUES ({vals_str});\n")
+                        count += 1
+                    
+                    logger.info(f"Exported {count} rows for {table_name}")
+                    f.write("\n")
+                    
+        engine.dispose()
+        logger.info(f"Native SQL export completed: {temp_path}")
+        return True
+    except Exception as e:
+        logger.exception(f"Native SQL Export Error: {str(e)}")
+        raise e
+
 @app.post("/export/table")
 async def export_table(req: ExportTableRequest):
     try:
@@ -1838,27 +1930,101 @@ async def export_table(req: ExportTableRequest):
 
 @app.post("/export/database")
 async def export_database(req: ExportDatabaseRequest, background_tasks: BackgroundTasks):
+    logger.info(f"Export Database request received for: {req.db_config.database} (Type: {req.db_config.db_type})")
     try:
         cfg = req.db_config
+        
+        # Initialize temp file
         fd, temp_path = tempfile.mkstemp(suffix=".sql")
         os.close(fd)
+        logger.info(f"Temporary file initialized at: {temp_path}")
         
-        env = os.environ.copy()
-        if cfg.db_type == "postgres":
-            env["PGPASSWORD"] = cfg.password
-            cmd = ["pg_dump", "-h", cfg.host, "-p", str(cfg.port), "-U", cfg.user, "-d", cfg.database, "-f", temp_path]
-        else:
-            env["MYSQL_PWD"] = cfg.password
-            cmd = ["mysqldump", "-h", cfg.host, "-P", str(cfg.port), "-u", cfg.user, cfg.database, "-r", temp_path]
+        # Use native SQL exporter
+        generate_native_sql_dump(cfg, temp_path)
             
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise Exception(proc.stderr)
+        if not os.path.exists(temp_path):
+            logger.error(f"CRITICAL: Temp file {temp_path} is missing after export!")
+            raise Exception(f"Temp file {temp_path} was not found after export.")
             
+        file_size = os.path.getsize(temp_path)
+        logger.info(f"Export completed successfully. File size: {file_size} bytes.")
+        
+        # Background task to remove the file after it has been served
         background_tasks.add_task(os.remove, temp_path)
-        return FileResponse(temp_path, media_type="application/sql", filename=f"{cfg.database}_dump.sql")
+        logger.info(f"Scheduled background deletion for {temp_path}")
+        
+        return FileResponse(
+            temp_path, 
+            media_type="application/sql", 
+            filename=f"{cfg.database}_dump.sql"
+        )
     except Exception as e:
+        logger.exception(f"Database Export Failed: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Database Export Failed: {str(e)}")
+
+@app.post("/import/scan")
+async def import_scan(
+    file: UploadFile = File(...),
+    format: str = Form(...)
+):
+    """Scans an import file and reports what will happen without executing anything."""
+    try:
+        content = await file.read()
+        content_str = content.decode("utf-8")
+        
+        report = {
+            "format": format,
+            "table_count": 0,
+            "row_count": 0,
+            "destructive_actions": [],
+            "tables_affected": [],
+            "estimated_operations": 0
+        }
+        
+        if format == "csv":
+            reader = csv.DictReader(io.StringIO(content_str))
+            rows = list(reader)
+            report["row_count"] = len(rows)
+            report["estimated_operations"] = len(rows)
+            
+        elif format == "json":
+            data = json.loads(content_str)
+            if isinstance(data, list):
+                report["row_count"] = len(data)
+                report["estimated_operations"] = len(data)
+            else:
+                report["destructive_actions"].append("JSON root is not an array. Import might fail.")
+                
+        elif format == "sql":
+            # Simple SQL scanner
+            stmts = [s.strip() for s in content_str.split(';') if s.strip()]
+            report["estimated_operations"] = len(stmts)
+            
+            for s in stmts:
+                s_upper = s.upper()
+                if s_upper.startswith("DROP"):
+                    report["destructive_actions"].append(f"Destructive: {s[:100]}...")
+                
+                if "CREATE TABLE" in s_upper:
+                    report["table_count"] += 1
+                    # Extract table name if possible
+                    match = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s\(\)]+)", s, re.IGNORECASE)
+                    if match:
+                        name = match.group(1).replace('"', '').replace('`', '').split('.')[-1]
+                        if name not in report["tables_affected"]:
+                            report["tables_affected"].append(name)
+                
+                if "INSERT INTO" in s_upper:
+                    report["row_count"] += 1
+                    match = re.search(r"INSERT\s+INTO\s+([^\s\(\)]+)", s, re.IGNORECASE)
+                    if match:
+                        name = match.group(1).replace('"', '').replace('`', '').split('.')[-1]
+                        if name not in report["tables_affected"]:
+                            report["tables_affected"].append(name)
+
+        return {"status": "success", "report": report}
+    except Exception as e:
+        return {"status": "error", "message": f"Scan failed: {str(e)}"}
 
 @app.post("/import/table")
 async def import_table(
@@ -1923,31 +2089,42 @@ async def import_database(
     file: UploadFile = File(...),
     db_config: str = Form(...)
 ):
+    """Imports a database SQL dump natively using the app's connection."""
     try:
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
         
-        fd, temp_path = tempfile.mkstemp(suffix=".sql")
-        with os.fdopen(fd, "wb") as f:
-            content = await file.read()
-            f.write(content)
-            
-        env = os.environ.copy()
-        if cfg.db_type == "postgres":
-            env["PGPASSWORD"] = cfg.password
-            cmd = ["psql", "-h", cfg.host, "-p", str(cfg.port), "-U", cfg.user, "-d", cfg.database, "-f", temp_path]
-        else:
-            env["MYSQL_PWD"] = cfg.password
-            cmd = ["mysql", "-h", cfg.host, "-P", str(cfg.port), "-u", cfg.user, cfg.database, "-e", f"source {temp_path}"]
-            
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
-        os.remove(temp_path)
+        session = get_db_connection(
+            db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
+            user=cfg.user, password=cfg.password, dbname=cfg.database
+        )
         
-        if proc.returncode != 0:
-            raise Exception(proc.stderr)
-            
-        return {"status": "success", "message": "Database imported successfully."}
+        content = await file.read()
+        content_str = content.decode("utf-8")
+        
+        # Split by semicolon but ignore ones inside quotes
+        # This is a basic implementation suitable for our native dumps
+        import re
+        statements = re.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
+        
+        inserted = 0
+        with session.begin():
+            for stmt in statements:
+                stmt = stmt.strip()
+                if not stmt:
+                    continue
+                try:
+                    session.execute(text(stmt))
+                    inserted += 1
+                except Exception as stmt_err:
+                    logger.warning(f"Failed to execute statement: {stmt[:50]}... Error: {str(stmt_err)}")
+                    # Continue if it's a "table already exists" or similar for non-destructive imports
+                    continue
+                    
+        session.close()
+        return {"status": "success", "message": f"Database import completed. Executed {inserted} SQL statements."}
     except Exception as e:
+        logger.exception(f"Database Import Failed: {str(e)}")
         return {"status": "error", "message": f"Database Import Failed: {str(e)}"}
 
 @app.post("/etl/migrate")
