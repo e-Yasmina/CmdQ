@@ -11,8 +11,13 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     const [mutationError, setMutationError] = useState("");
     const [showExportModal, setShowExportModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
+    const [showDbImportModal, setShowDbImportModal] = useState(false);
 
-    const canMutate = Boolean(activeConfig && activeSchemaName && activeTableName && onRefresh);
+    const effectiveSchema = activeSchemaName || result?.targetSchema;
+    const effectiveTable = activeTableName || result?.targetTable;
+    const canMutate = Boolean(activeConfig && effectiveSchema && effectiveTable && onRefresh);
+    const refSchema = effectiveSchema;
+    const refTable = effectiveTable;
 
     if (result?.loading) {
         return (
@@ -70,7 +75,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `UPDATE "${activeSchemaName}"."${activeTableName}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
+            const query = `UPDATE "${refSchema}"."${refTable}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
 
             await apiService.executeQuery({
                 query,
@@ -103,7 +108,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `DELETE FROM "${activeSchemaName}"."${activeTableName}" WHERE ${whereClause}`;
+            const query = `DELETE FROM "${refSchema}"."${refTable}" WHERE ${whereClause}`;
 
             await apiService.executeQuery({
                 query,
@@ -152,7 +157,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             const validColNames = validColNamesList.join(', ');
             const validValues = validValuesList.join(', ');
 
-            const query = `INSERT INTO "${activeSchemaName}"."${activeTableName}" (${validColNames}) VALUES (${validValues})`;
+            const query = `INSERT INTO "${refSchema}"."${refTable}" (${validColNames}) VALUES (${validValues})`;
 
             await apiService.executeQuery({
                 query,
@@ -398,7 +403,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                     {(result.hasRls || !result.isTableClick) && (
                         <>
                             <button 
-                                onClick={() => onDiagnose && onDiagnose(activeSchemaName, activeTableName)}
+                                onClick={() => onDiagnose && onDiagnose(refSchema, refTable)}
                                 className="bg-cyan-500/10 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500 hover:text-black px-4 py-2 rounded text-xs font-bold transition-all flex items-center gap-2"
                             >
                                 🔐 Diagnose ERLS / Protection
@@ -441,25 +446,45 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
+            {hasData && (
+                <div className="flex justify-end mt-2 shrink-0 gap-2">
+                    <button
+                        onClick={() => setShowDbImportModal(true)}
+                        className="bg-panel border border-border hover:bg-white/5 text-secondary px-3 py-1.5 text-xs font-bold rounded transition-colors shadow-sm"
+                    >
+                        📥 Import SQL File
+                    </button>
+                </div>
+            )}
+
             {showExportModal && (
                 <ExportForm
                     isDatabase={false}
-                    targetName={activeTableName || activeSchemaName}
+                    targetName={refTable || refSchema}
                     activeConfig={activeConfig}
-                    schemaName={activeSchemaName}
-                    tableName={activeTableName}
+                    schemaName={refSchema}
+                    tableName={refTable}
                     onCancel={() => setShowExportModal(false)}
                 />
             )}
             {showImportModal && (
                 <ImportForm
                     isDatabase={false}
-                    targetName={activeTableName || activeSchemaName}
+                    targetName={refTable || refSchema}
                     activeConfig={activeConfig}
-                    schemaName={activeSchemaName}
-                    tableName={activeTableName}
+                    schemaName={refSchema}
+                    tableName={refTable}
                     onCancel={() => setShowImportModal(false)}
                     onSuccess={onRefresh}
+                />
+            )}
+            {showDbImportModal && activeConfig && (
+                <ImportForm
+                    isDatabase={true}
+                    targetName={activeConfig.database}
+                    activeConfig={activeConfig}
+                    onCancel={() => setShowDbImportModal(false)}
+                    onSuccess={() => setShowDbImportModal(false)}
                 />
             )}
         </ScrollArea>
