@@ -42,6 +42,8 @@ const CopyIcon = ({ className }) => (
 
 function App() {
   const [prompt, setPrompt] = useState("");
+  const [attachedFile, setAttachedFile] = useState(null);
+  const fileInputRef = useRef(null);
   const [sqlResult, setSqlResult] = useState(null);
   const [sqlQuery, setSqlQuery] = useState("");
 
@@ -595,11 +597,46 @@ function App() {
     }
   };
 
+  const handleFileAttach = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const name = file.name;
+      const ext = name.split('.').pop().toLowerCase();
+
+      if (ext === 'csv' || ext === 'json' || ext === 'txt') {
+        const text = await file.text();
+        setAttachedFile({ name, content: text, type: ext });
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const allData = [];
+        wb.SheetNames.forEach(sheetName => {
+          const ws = wb.Sheets[sheetName];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          if (json.length > 0) {
+            allData.push(`--- Sheet: ${sheetName} ---`);
+            allData.push(JSON.stringify(json, null, 2));
+          }
+        });
+        setAttachedFile({ name, content: allData.join('\n'), type: 'excel' });
+      } else {
+        setAttachedFile({ name, content: `[Unsupported file type: .${ext}]`, type: ext });
+      }
+    } catch (err) {
+      console.error("File attach error:", err);
+      alert("Failed to read file: " + err.message);
+    }
+    e.target.value = "";
+  };
+
   const extractTableFromQuery = (query) => {
     if (!query) return null;
-    const match = query.match(/from\s+([`"]?[a-zA-Z0-9_]+[`"]?(?:\.[`"]?[a-zA-Z0-9_]+[`"]?)?)/i);
+    const cleaned = query.replace(/^--.*$/gm, '').trim();
+    const match = cleaned.match(/\bfrom\s+([`"\[]?[a-zA-Z0-9_]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_]+[`"\]]?)?)/i);
     if (match) {
-      const full = match[1].replace(/[`"]/g, '');
+      const full = match[1].replace(/[`"\[\]]/g, '');
       const parts = full.split('.');
       if (parts.length === 2) {
         return { schema: parts[0], table: parts[1] };
@@ -626,6 +663,11 @@ function App() {
       if (data.status === "error") {
         setSqlResult({ error: data.message || "Query Failed" });
         return;
+      }
+
+      if (isSelect && extracted) {
+        setActiveSchemaName(extracted.schema);
+        setActiveTableName(extracted.table);
       }
 
       setSqlResult({
@@ -770,17 +812,36 @@ function App() {
         schema_data: activeSchema || {},
         chat_history: chatHistory,
         protected_items: protectedItems,
-        session_context: sessionContext
+        session_context: sessionContext,
+        attached_file: attachedFile || undefined
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
+      setAttachedFile(null);
 
       if (data.extracted_sql) {
         const extracted = extractTableFromQuery(data.extracted_sql);
-        const isSelect = data.extracted_sql.toLowerCase().trim().startsWith('select');
+        const isSelect = /^\s*(?:--.*\n\s*)*select\b/i.test(data.extracted_sql);
         data.isTableClick = false;
         data.targetSchema = (isSelect && extracted) ? extracted.schema : null;
         data.targetTable = (isSelect && extracted) ? extracted.table : null;
+
+        if (isSelect && extracted) {
+          setActiveSchemaName(extracted.schema);
+          setActiveTableName(extracted.table);
+
+          const tableInfo = activeSchema?.[extracted.schema]?.[extracted.table];
+          if (tableInfo?.constraints) {
+            data.constraints = tableInfo.constraints;
+          }
+          if (tableInfo?.columns) {
+            data.columns = tableInfo.columns;
+          }
+        }
+      }
+
+      if (data.data && !data.original_data) {
+        data.original_data = JSON.parse(JSON.stringify(data.data));
       }
 
       setSqlResult(data);
@@ -915,6 +976,11 @@ function App() {
     if (entity.type === 'server') {
       const server = entity.server;
       switch (action) {
+        case 'import':
+          setActiveConnectionId(server.id);
+          setActiveDatabase(server.databases?.[0] || "");
+          setShowImportDbModal(true);
+          break;
         case 'rename':
         case 'properties':
         case 'backup':
@@ -1454,26 +1520,48 @@ function App() {
               ))}
             </ScrollArea>
 
-            <div className="flex items-center border-t border-border pt-2 flex-shrink-0 relative">
-              {/* <div className="absolute -top-6 left-0 flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${backendStatus === 'connected' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`}></div>
-                <span className="text-[10px] uppercase font-bold tracking-tighter text-gray-500">
-                  Backend: {backendStatus === 'connected' ? 'Online' : 'Disconnected'} 
-                  {activeDatabase && ` | DB: ${activeDatabase}`}
-                </span>
+            <div className="flex flex-col border-t border-border pt-2 flex-shrink-0 relative">
+              {attachedFile && (
+                <div className="flex items-center gap-2 px-1 pb-1.5 text-[11px]">
+                  <span className="text-primary">📎 {attachedFile.name}</span>
+                  <span className="text-gray-500">({attachedFile.type})</span>
+                  <button
+                    onClick={() => setAttachedFile(null)}
+                    className="text-red-400 hover:text-red-300 ml-auto cursor-pointer"
+                    title="Remove file"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.json,.txt,.xlsx,.xls"
+                  onChange={handleFileAttach}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!activeConfig}
+                  className="text-gray-400 hover:text-primary transition-colors cursor-pointer disabled:opacity-50 shrink-0 p-1"
+                  title="Attach file (CSV, JSON, Excel)"
+                >
+                  📎
+                </button>
+                <input
+                  type="text"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') launchCli();
+                  }}
+                  disabled={!activeConfig}
+                  placeholder={activeConfig ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
+                  className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
+                />
               </div>
-              <span className="text-primary font-bold mr-2">&gt;</span> */}
-              <input
-                type="text"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') launchCli();
-                }}
-                disabled={!activeConfig}
-                placeholder={activeConfig ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
-                className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
-              />
             </div>
           </div>
         )}
@@ -1691,7 +1779,10 @@ function App() {
           targetName={activeDatabase}
           activeConfig={activeConfig}
           onCancel={() => setShowImportDbModal(false)}
-          onSuccess={() => handleDbChange(activeConnectionId, activeDatabase)}
+          onSuccess={() => {
+            setShowImportDbModal(false);
+            if (activeConnectionId) handleRefreshConnection(activeConnectionId);
+          }}
         />
       )}
 

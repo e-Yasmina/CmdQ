@@ -6,6 +6,7 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
     const [selectedFile, setSelectedFile] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [scanResult, setScanResult] = useState(null);
+    const [targetDatabase, setTargetDatabase] = useState(activeConfig?.database || "");
     const fileInputRef = useRef();
 
     const handleScan = async () => {
@@ -40,6 +41,8 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
             const formData = new FormData();
             formData.append('file', selectedFile);
             formData.append('db_config', JSON.stringify(activeConfig));
+
+            formData.append('target_database', targetDatabase);
 
             let result;
             if (isDatabase) {
@@ -106,6 +109,19 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
                         className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none text-sm cursor-pointer"
                     />
                 </div>
+
+                {isDatabase && (
+                    <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-400 uppercase">Target Database (optional — leave blank to use name from SQL dump)</label>
+                        <input
+                            type="text"
+                            value={targetDatabase}
+                            onChange={(e) => setTargetDatabase(e.target.value)}
+                            placeholder={activeConfig?.database || "mydb"}
+                            className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none text-sm"
+                        />
+                    </div>
+                )}
 
                 <div className="flex gap-2 mt-2">
                     <button

@@ -74,6 +74,20 @@ class AIPrompt(BaseModel):
     chat_history: List[ChatMessage] = []
     protected_items: List[str] = []
     session_context: List[str] = []
+    attached_file: Dict[str, Any] = None
+
+def get_attached_file_prompt(attached_file):
+    if not attached_file:
+        return ""
+    name = attached_file.get("name", "unknown")
+    ftype = attached_file.get("type", "unknown")
+    content = attached_file.get("content", "")
+    if not content:
+        return ""
+    max_chars = 50000
+    if len(content) > max_chars:
+        content = content[:max_chars] + f"\n... [TRUNCATED to {max_chars} characters]"
+    return f"The user attached a file '{name}' (type: {ftype}). File contents:\n{content}\n\n"
 
 class SecurityAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -1450,6 +1464,7 @@ async def ai_prompt(payload: AIPrompt):
             f"Schema JSON: {schema_json_str}\n\n"
             f"{protection_instruction}"
             f"{session_context_instr}"
+            f"{get_attached_file_prompt(payload.attached_file)}"
             f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
             f"{history_str}"
             f"User request: {payload.prompt}\n\n"
@@ -2087,42 +2102,117 @@ async def import_table(
 @app.post("/import/database")
 async def import_database(
     file: UploadFile = File(...),
-    db_config: str = Form(...)
+    db_config: str = Form(...),
+    target_database: str = Form("")
 ):
-    """Imports a database SQL dump natively using the app's connection."""
+    """Imports a SQL dump to restore a full database on the server.
+
+    The .sql file may contain CREATE DATABASE, CREATE TABLE, INSERT, etc.
+    This endpoint handles:
+    - Bootstrapping: connecting to default admin DB first if the target DB doesn't exist
+    - CREATE DATABASE / DROP DATABASE statements
+    - AUTOCOMMIT for DDL
+    - Transactional execution for DML
+    """
+    import re as re_mod
     try:
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
-        
-        session = get_db_connection(
-            db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
-            user=cfg.user, password=cfg.password, dbname=cfg.database
-        )
-        
         content = await file.read()
         content_str = content.decode("utf-8")
-        
-        # Split by semicolon but ignore ones inside quotes
-        # This is a basic implementation suitable for our native dumps
-        import re
-        statements = re.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
-        
-        inserted = 0
-        with session.begin():
-            for stmt in statements:
-                stmt = stmt.strip()
-                if not stmt:
-                    continue
-                try:
-                    session.execute(text(stmt))
-                    inserted += 1
-                except Exception as stmt_err:
-                    logger.warning(f"Failed to execute statement: {stmt[:50]}... Error: {str(stmt_err)}")
-                    # Continue if it's a "table already exists" or similar for non-destructive imports
-                    continue
-                    
-        session.close()
-        return {"status": "success", "message": f"Database import completed. Executed {inserted} SQL statements."}
+
+        # 1. Scan for CREATE DATABASE and DROP DATABASE statements
+        create_db_match = re_mod.search(r'CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re_mod.IGNORECASE)
+        drop_db_match = re_mod.search(r'DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re_mod.IGNORECASE)
+        dump_db_name = create_db_match.group(2) if create_db_match else (drop_db_match.group(2) if drop_db_match else "")
+
+        # 2. Determine actual target database name
+        target_db = target_database or dump_db_name or cfg.database
+        if not target_db:
+            return {"status": "error", "message": "No target database specified. Provide a database name or include CREATE DATABASE in your SQL dump."}
+
+        # 3. Split SQL into statements (handle quoted semicolons, dollar quotes for PG functions)
+        raw_statements = re_mod.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
+
+        # 4. Separate DDL (needs autocommit) from DML (can be transactional)
+        ddl_statements = []
+        dml_statements = []
+        for raw_stmt in raw_statements:
+            stmt = raw_stmt.strip()
+            if not stmt:
+                continue
+            upper = stmt.upper()
+            if any(upper.startswith(kw) for kw in ["CREATE DATABASE", "DROP DATABASE", "CREATE TABLE", "DROP TABLE", "ALTER TABLE", "TRUNCATE", "CREATE INDEX", "DROP INDEX", "CREATE SEQUENCE", "DROP SEQUENCE", "CREATE SCHEMA", "DROP SCHEMA", "CREATE EXTENSION", "ALTER DATABASE", "ALTER SCHEMA", "SET ", "SELECT pg_catalog"]):
+                ddl_statements.append(stmt)
+            else:
+                dml_statements.append(stmt)
+
+        from sqlalchemy import create_engine
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+
+        def make_url(db_name):
+            if cfg.db_type == "postgres":
+                return f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
+            return f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
+
+        # 5. Determine bootstrap database (default admin DB)
+        bootstrap_db = "postgres" if cfg.db_type == "postgres" else ""
+        import urllib.parse as url_parse_mod
+
+        # 6. Connect to bootstrap DB and execute DDL
+        total_executed = 0
+
+        # Handle DDL statements that require AUTOCOMMIT (CREATE DATABASE, etc.)
+        if ddl_statements:
+            ddl_engine = create_engine(make_url(bootstrap_db), isolation_level="AUTOCOMMIT")
+            with ddl_engine.connect() as conn:
+                for stmt in ddl_statements:
+                    try:
+                        conn.execute(text(stmt))
+                        total_executed += 1
+                    except Exception as stmt_err:
+                        err_msg = str(stmt_err).lower()
+                        # Ignore "already exists" and "duplicate" errors for idempotent imports
+                        if any(kw in err_msg for kw in ["already exists", "duplicate", "already been created"]):
+                            logger.info(f"Skipped (already exists): {stmt[:60]}...")
+                        else:
+                            logger.warning(f"DDL statement error: {stmt[:60]}... {str(stmt_err)}")
+
+            ddl_engine.dispose()
+
+        # 7. If CREATE DATABASE was in the dump and we executed it, reconnect to the new DB
+        current_db = target_db
+        if create_db_match:
+            current_db = create_db_match.group(2)
+
+        # 8. Execute DML (INSERT, UPDATE, etc.) in a transaction
+        if dml_statements:
+            try:
+                dml_engine = create_engine(make_url(current_db))
+                with dml_engine.begin() as conn:
+                    for stmt in dml_statements:
+                        try:
+                            conn.execute(text(stmt))
+                            total_executed += 1
+                        except Exception as stmt_err:
+                            logger.warning(f"DML statement error: {stmt[:60]}... {str(stmt_err)}")
+                dml_engine.dispose()
+            except Exception as conn_err:
+                # If we can't connect to the new DB, the CREATE DATABASE might have failed silently
+                # Try connecting back to the bootstrap DB and executing DML there
+                logger.warning(f"Could not connect to '{current_db}', falling back to bootstrap DB: {str(conn_err)}")
+                fallback_engine = create_engine(make_url(bootstrap_db))
+                with fallback_engine.begin() as conn:
+                    for stmt in dml_statements:
+                        try:
+                            conn.execute(text(stmt))
+                            total_executed += 1
+                        except Exception as stmt_err:
+                            logger.warning(f"DML (fallback) error: {stmt[:60]}... {str(stmt_err)}")
+                fallback_engine.dispose()
+
+        return {"status": "success", "message": f"Database import completed. Executed {total_executed} SQL statements in database '{current_db}'."}
     except Exception as e:
         logger.exception(f"Database Import Failed: {str(e)}")
         return {"status": "error", "message": f"Database Import Failed: {str(e)}"}
