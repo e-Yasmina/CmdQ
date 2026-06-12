@@ -76,11 +76,26 @@ function App() {
   const activeConfig = useMemo(() => activeConn ? { ...activeConn.config, database: activeDatabase || "" } : null, [activeConn, activeDatabase]);
   const activeSchema = useMemo(() => activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null, [activeConn, activeDatabase]);
 
+  const tableList = useMemo(() => {
+    if (!activeSchema) return [];
+    const list = [];
+    for (const [sName, tables] of Object.entries(activeSchema)) {
+      for (const tName of Object.keys(tables)) {
+        list.push(`${sName}.${tName}`);
+      }
+    }
+    return list.sort();
+  }, [activeSchema]);
+
   // AI CLI State
   const [availableClis, setAvailableClis] = useState([]);
   const [selectedCli, setSelectedCli] = useState("");
   const [customCliCommand, setCustomCliCommand] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
+  const [selectedTable, setSelectedTable] = useState("");
+  const [selectedAction, setSelectedAction] = useState("");
+  const [showTableMention, setShowTableMention] = useState(false);
+  const [tableMentionFilter, setTableMentionFilter] = useState("");
 
   // API Model Registration State
   const [showApiModal, setShowApiModal] = useState(false);
@@ -768,6 +783,46 @@ function App() {
     }
   };
 
+  const handlePromptChange = (e) => {
+    const newValue = e.target.value;
+    setPrompt(newValue);
+    const atIndex = newValue.lastIndexOf('@');
+    if (atIndex === -1 || (atIndex > 0 && newValue[atIndex - 1] !== ' ' && newValue[atIndex - 1] !== '\t' && newValue[atIndex - 1] !== '(')) {
+      setShowTableMention(false);
+      if (atIndex === -1 && !newValue.includes('@')) {
+        setSelectedTable("");
+        setSelectedAction("");
+      }
+      return;
+    }
+    const afterAt = newValue.slice(atIndex + 1);
+    const spaceIndex = afterAt.search(/[\s,;)]/);
+    const filterText = spaceIndex === -1 ? afterAt : afterAt.slice(0, spaceIndex);
+    setTableMentionFilter(filterText);
+    setShowTableMention(true);
+  };
+
+  const handleTableMentionSelect = (tableName) => {
+    const atIndex = prompt.lastIndexOf('@');
+    const beforeAt = prompt.slice(0, atIndex);
+    const afterMention = prompt.slice(atIndex + 1);
+    const endIndex = afterMention.search(/[\s,;)]/);
+    const rest = endIndex === -1 ? '' : afterMention.slice(endIndex);
+    setPrompt(beforeAt + '@' + tableName + rest + ' ');
+    setSelectedTable(tableName);
+    setShowTableMention(false);
+  };
+
+  const handleActionSelect = (action) => {
+    setSelectedAction(prev => prev === action ? "" : action);
+  };
+
+  const filteredTableMentions = useMemo(() => {
+    if (!tableMentionFilter) return tableList;
+    const lower = tableMentionFilter.toLowerCase();
+    return tableList.filter(t => t.toLowerCase().includes(lower));
+  }, [tableList, tableMentionFilter]);
+
   const handleDebugLaunch = async () => {
     console.log("DEBUG: handleDebugLaunch called. selectedCli:", selectedCli, "customCliCommand:", customCliCommand);
     try {
@@ -809,11 +864,12 @@ function App() {
         command: command,
         prompt: prompt,
         db_config: activeConfig,
-        schema_data: activeSchema || {},
         chat_history: chatHistory,
         protected_items: protectedItems,
         session_context: sessionContext,
-        attached_file: attachedFile || undefined
+        attached_file: attachedFile || undefined,
+        selected_table: selectedTable,
+        action: selectedAction
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
@@ -1534,6 +1590,47 @@ function App() {
                   </button>
                 </div>
               )}
+
+              {showTableMention && filteredTableMentions.length > 0 && (
+                <div className="absolute bottom-full left-0 right-0 mb-1 mx-1 max-h-40 overflow-y-auto bg-panel border border-border rounded shadow-lg z-50">
+                  {filteredTableMentions.map(t => (
+                    <div
+                      key={t}
+                      onClick={() => handleTableMentionSelect(t)}
+                      className="px-3 py-1.5 text-xs text-textPrimary hover:bg-primary/20 cursor-pointer font-code truncate"
+                    >
+                      {t}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedTable && (
+                <div className="flex items-center gap-1.5 px-1 pb-1.5 flex-wrap">
+                  <span className="text-[11px] text-primary font-bold mr-1">@{selectedTable}</span>
+                  {["seed", "edit", "delete", "insert", "select", "describe"].map(a => (
+                    <button
+                      key={a}
+                      onClick={() => handleActionSelect(a)}
+                      className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all cursor-pointer ${
+                        selectedAction === a
+                          ? "bg-primary text-background"
+                          : "bg-white/5 text-gray-400 hover:text-textPrimary hover:bg-white/10"
+                      }`}
+                    >
+                      {a}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => { setSelectedTable(""); setSelectedAction(""); }}
+                    className="text-[10px] text-red-400 hover:text-red-300 ml-auto cursor-pointer px-1"
+                    title="Clear table selection"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <input
                   ref={fileInputRef}
@@ -1550,17 +1647,19 @@ function App() {
                 >
                   📎
                 </button>
-                <input
-                  type="text"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') launchCli();
-                  }}
-                  disabled={!activeConfig}
-                  placeholder={activeConfig ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
-                  className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
-                />
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    value={prompt}
+                    onChange={handlePromptChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') launchCli();
+                    }}
+                    disabled={!activeConfig}
+                    placeholder={activeConfig ? "type your command here... (e.g. 'Seed @public.users with 50 rows') and press Enter" : "Connect to a database first..."}
+                    className="w-full bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
+                  />
+                </div>
               </div>
             </div>
           </div>

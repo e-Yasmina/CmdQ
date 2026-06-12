@@ -18,6 +18,7 @@ import time
 import traceback
 import uvicorn
 from database import get_db_connection
+from db_context_builder import extract_schema, extract_relationships, build_base_prompt, parse_table_mentions, build_mentioned_tables_context
 from sqlalchemy import text, create_engine, MetaData, Table, select
 from sqlalchemy.schema import CreateTable
 from persistence_manager import storage
@@ -70,24 +71,13 @@ class AIPrompt(BaseModel):
     prompt: str
     command: str
     db_config: ConnectionDetails
-    schema_data: Dict[str, Any]
+    schema_data: Dict[str, Any] = None
     chat_history: List[ChatMessage] = []
     protected_items: List[str] = []
     session_context: List[str] = []
     attached_file: Dict[str, Any] = None
-
-def get_attached_file_prompt(attached_file):
-    if not attached_file:
-        return ""
-    name = attached_file.get("name", "unknown")
-    ftype = attached_file.get("type", "unknown")
-    content = attached_file.get("content", "")
-    if not content:
-        return ""
-    max_chars = 50000
-    if len(content) > max_chars:
-        content = content[:max_chars] + f"\n... [TRUNCATED to {max_chars} characters]"
-    return f"The user attached a file '{name}' (type: {ftype}). File contents:\n{content}\n\n"
+    selected_table: str = ""
+    action: str = ""
 
 class SecurityAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -262,114 +252,16 @@ async def drop_database(req: DropDatabaseRequest):
 async def get_schema(details: ConnectionDetails):
     """Executes SELECT queries against information_schema in read-only mode."""
     try:
-        session = get_db_connection(
+        schema_dict = extract_schema(
             db_type=details.db_type,
             host=details.host,
             port=details.port,
             user=details.user,
             password=details.password,
-            dbname=details.database
+            database=details.database
         )
-        
-        schema_dict = {}
-        if details.db_type == "postgres":
-            query = """
-                SELECT 
-                    c.table_schema, 
-                    c.table_name, 
-                    c.column_name,
-                    pgc.relrowsecurity as has_rls
-                FROM information_schema.columns c
-                JOIN information_schema.tables t 
-                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
-                JOIN pg_class pgc ON pgc.relname = t.table_name
-                JOIN pg_namespace pgn ON pgn.oid = pgc.relnamespace AND pgn.nspname = t.table_schema
-                WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
-                  AND t.table_type = 'BASE TABLE'
-                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
-            """
-        else:
-            query = """
-                SELECT c.table_schema, c.table_name, c.column_name, false as has_rls
-                FROM information_schema.columns c
-                JOIN information_schema.tables t 
-                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
-                WHERE c.table_schema = DATABASE()
-                  AND t.table_type = 'BASE TABLE'
-                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
-            """
-            
-        result = session.execute(text(query)).fetchall()
-        for row in result:
-            schema_name, table_name, col_name, has_rls = row[0], row[1], row[2], row[3]
-            if schema_name not in schema_dict:
-                schema_dict[schema_name] = {}
-            if table_name not in schema_dict[schema_name]:
-                schema_dict[schema_name][table_name] = {"columns": [], "has_rls": bool(has_rls), "constraints": []}
-            schema_dict[schema_name][table_name]["columns"].append(col_name)
-            
-        # Fetch constraints
-        if details.db_type == "postgres":
-            constr_query = """
-                SELECT 
-                    tc.table_schema, 
-                    tc.table_name, 
-                    tc.constraint_name, 
-                    tc.constraint_type,
-                    pg_get_constraintdef(c.oid) AS definition
-                FROM information_schema.table_constraints AS tc
-                JOIN pg_namespace n ON n.nspname = tc.table_schema
-                JOIN pg_class cl ON cl.relname = tc.table_name AND cl.relnamespace = n.oid
-                JOIN pg_constraint c ON c.conrelid = cl.oid AND c.conname = tc.constraint_name
-                WHERE tc.table_schema NOT IN ('information_schema', 'pg_catalog');
-            """
-        else:
-            constr_query = """
-                SELECT table_schema, table_name, constraint_name, constraint_type, '' as definition
-                FROM information_schema.table_constraints
-                WHERE table_schema = DATABASE();
-            """
-        
-        constr_result = session.execute(text(constr_query)).fetchall()
-        print(f"DEBUG: Found {len(constr_result)} constraints in total.")
-        matched_count = 0
-        unmatched_samples = []
-        for row in constr_result:
-            s_name, t_name, c_name, c_type, c_def = str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4])
-            
-            # 1. Try exact match
-            if s_name in schema_dict and t_name in schema_dict[s_name]:
-                schema_dict[s_name][t_name]["constraints"].append({
-                    "name": c_name, 
-                    "type": c_type,
-                    "definition": c_def
-                })
-                matched_count += 1
-                continue
-                
-            # 2. Try lowercase match
-            s_low, t_low = s_name.lower(), t_name.lower()
-            s_match = next((k for k in schema_dict.keys() if k.lower() == s_low), None)
-            if s_match:
-                t_match = next((k for k in schema_dict[s_match].keys() if k.lower() == t_low), None)
-                if t_match:
-                    schema_dict[s_match][t_match]["constraints"].append({
-                        "name": c_name, 
-                        "type": c_type,
-                        "definition": c_def
-                    })
-                    matched_count += 1
-                    continue
-            
-            if len(unmatched_samples) < 5:
-                unmatched_samples.append(f"{s_name}.{t_name}")
-                
-        print(f"DEBUG: Matched {matched_count} constraints. Unmatched samples: {unmatched_samples}")
-
-        session.close()
         return {"status": "success", "schema": schema_dict}
     except Exception as e:
-        session.close() # Ensure closure on error
         raise HTTPException(status_code=400, detail=f"Schema extraction failed: {str(e)}")
 
 @app.post("/analyze/protection")
@@ -1416,7 +1308,7 @@ def translate_table(req: TranslateRequest):
 
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
-    """Takes user's prompt + JSON schema, constructs context window, calls subprocess, extracts/runs SQL."""
+    """Takes user's prompt, fetches schema from DB, constructs context, calls AI, extracts/runs SQL."""
     try:
         cfg = payload.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
@@ -1430,51 +1322,87 @@ async def ai_prompt(payload: AIPrompt):
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
 
-        schema_metadata = []
-        if isinstance(payload.schema_data, dict):
-            for s_name, tables in payload.schema_data.items():
-                if isinstance(tables, dict):
-                    schema_metadata.append(f"Schema '{s_name}' contains exactly {len(tables)} tables.")
-        metadata_str = " ".join(schema_metadata)
+        user_prompt = payload.prompt
 
-        history_str = ""
-        if payload.chat_history:
-            history_str = "Previous Conversation History:\n" + "\n".join([f"{msg.role}: {msg.content}" for msg in payload.chat_history]) + "\n\n"
+        mentions = parse_table_mentions(payload.prompt)
 
-        # Truncate metadata if it's obscenely large to prevent stdin saturation
-        schema_json_str = json.dumps(payload.schema_data)
-        if len(schema_json_str) > 10000:
-            schema_json_str = schema_json_str[:10000] + "... [TRUNCATED]"
-            
-        protection_instruction = ""
-        if payload.protected_items:
-            prot_list = ", ".join([f"'{p.split('::')[-1]}'" for p in payload.protected_items])
-            protection_instruction = f"URGENT ABSOLUTE RULE: The following databases, schemas, or tables are PROTECTED and strictly forbidden to be accessed or modified: {prot_list}. You MUST NEVER generate queries targeting them.\n\n"
+        for schema_name, table_name in mentions:
+            user_prompt = user_prompt.replace(f"@{schema_name}.{table_name}", f"{schema_name}.{table_name}")
 
-        session_context_instr = ""
-        if payload.session_context:
-            ctx_cmds = "\n".join(payload.session_context)
-            session_context_instr = f"ACTIVE SESSION CONTEXT (These commands are automatically executed before your generated SQL, so you don't need to repeat them):\n{ctx_cmds}\n\n"
+        schema_dict = extract_schema(
+            db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+            user=cfg.user, password=cfg.password, database=cfg.database
+        )
 
-        base_prompt = (
-            f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
-            f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
-            f"Given this database schema:\n"
-            f"{metadata_str}\n"
-            f"Schema JSON: {schema_json_str}\n\n"
-            f"{protection_instruction}"
-            f"{session_context_instr}"
-            f"{get_attached_file_prompt(payload.attached_file)}"
-            f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
-            f"{history_str}"
-            f"User request: {payload.prompt}\n\n"
-            f"Provide your answer. IF you determine that a SQL query needs to be executed "
-            f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block.\n"
-            f"IMPORTANT: If you need to run a diagnostic SELECT query to investigate the schema or data states before performing the final action, "
-            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute it and give you the results so you can continue. "
-            f"HOWEVER, investigation is ONLY a means to an end. You MUST eventually perform the final action (INSERT, UPDATE, etc.) requested by the user in the same session. "
-            f"Do NOT stop after an investigation; use the results to complete the task immediately.\n"
-            f"CRITICAL: When you are completely finished with the ENTIRE task, you MUST output the exact token: __CMDQ_DONE__"
+        target_table = None
+        if payload.selected_table:
+            parts = payload.selected_table.split(".", 1)
+            target_table = tuple(parts) if len(parts) == 2 else ("public", parts[0])
+        elif mentions:
+            target_table = mentions[0]
+
+        all_relationships = None
+        mentions_context = ""
+        if mentions:
+            all_relationships = extract_relationships(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database
+            )
+            mentions_context = build_mentioned_tables_context(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database,
+                mentions=mentions, schema_dict=schema_dict,
+                all_relationships=all_relationships,
+                target_table=target_table
+            )
+
+        if target_table:
+            t_schema, t_table = target_table
+
+            if all_relationships is None:
+                all_relationships = extract_relationships(
+                    db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                    user=cfg.user, password=cfg.password, database=cfg.database
+                )
+
+            related = {(t_schema, t_table)}
+            for rel in all_relationships:
+                if rel["source_schema"] == t_schema and rel["source_table"] == t_table:
+                    related.add((rel["referenced_schema"], rel["referenced_table"]))
+                if rel["referenced_schema"] == t_schema and rel["referenced_table"] == t_table:
+                    related.add((rel["source_schema"], rel["source_table"]))
+
+            focused = {}
+            for s_name, tables in schema_dict.items():
+                for t_name, t_info in tables.items():
+                    if (s_name, t_name) in related:
+                        if s_name not in focused:
+                            focused[s_name] = {}
+                        focused[s_name][t_name] = t_info
+            schema_dict = focused
+
+        prompt_parts = [user_prompt]
+        if mentions_context:
+            prompt_parts.append(mentions_context)
+        if payload.selected_table:
+            prefix = f"[Table: {payload.selected_table}"
+            if payload.action:
+                prefix += f", Action: {payload.action}"
+            prefix += "]\n"
+            prompt_parts.insert(0, prefix)
+        elif payload.action and mentions:
+            prefix = f"[Action: {payload.action} on target table from @mentions]\n"
+            prompt_parts.insert(0, prefix)
+        user_prompt = "\n".join(prompt_parts)
+
+        base_prompt = build_base_prompt(
+            db_config=cfg,
+            schema_dict=schema_dict,
+            protected_items=payload.protected_items,
+            session_context=payload.session_context,
+            attached_file=payload.attached_file,
+            chat_history=payload.chat_history,
+            user_prompt=user_prompt
         )
 
         cmd_to_run = payload.command
