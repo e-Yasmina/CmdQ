@@ -2,9 +2,11 @@ import { useState, useCallback } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { sql } from '@codemirror/lang-sql';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
+import SaveQueryModal from './SaveQueryModal';
 
 export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQuery, isLoading }) {
 
+    const [showSaveModal, setShowSaveModal] = useState(false);
 
     const handleKeyDown = (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -23,14 +25,7 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
                 <h2 className="text-xs uppercase text-gray-500 font-bold tracking-wider">SQL Editor</h2>
                 <div className="flex gap-2">
                     <button
-                        onClick={() => {
-                            if (value.trim()) {
-                                const name = window.prompt("Enter a name for this query:");
-                                if (name) {
-                                    onSaveQuery(value, name);
-                                }
-                            }
-                        }}
+                        onClick={() => setShowSaveModal(true)}
                         disabled={isLoading || !value.trim()}
                         className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer"
                     >
@@ -93,6 +88,12 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
             <div className="text-xs text-gray-500 mt-2 text-right">
                 Press Ctrl+Enter or F5 to execute
             </div>
+
+            <SaveQueryModal
+                isOpen={showSaveModal}
+                onClose={() => setShowSaveModal(false)}
+                onSave={(name) => onSaveQuery(value, name)}
+            />
         </div>
     );
 }
