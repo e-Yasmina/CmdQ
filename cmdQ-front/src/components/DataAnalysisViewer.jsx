@@ -53,7 +53,7 @@ export default function DataAnalysisViewer({ result }) {
             <div className="flex justify-between items-end border-b border-border pb-4">
                 <div>
                     <h2 className="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                        <span>📊</span> Data Analysis
+                        <span>📊</span> Analysis
                     </h2>
                     <p className="text-secondary text-sm mt-1">
                         Analyzing {isTable ? 'Table' : 'Database'}: <span className="text-textPrimary font-bold">{metrics.target}</span>

@@ -1174,7 +1174,7 @@ function App() {
         )}
 
         {/* Sidebar Header with Toggle */}
-        <div className={`h-12 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
+        <div className={`h-9 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
           {!sidebarCollapsed && <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Explorer</span>}
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -1186,10 +1186,10 @@ function App() {
         </div>
 
         {sidebarCollapsed ? (
-          <div className="flex-1 flex flex-col items-center py-4 gap-4 overflow-y-auto no-scrollbar">
+          <div className="flex-1 flex flex-col items-center py-2 gap-2 overflow-y-auto no-scrollbar">
             <button
               onClick={() => setShowConnectionForm(true)}
-              className="w-10 h-10 flex items-center justify-center rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-background transition-all cursor-pointer flex-shrink-0"
+              className="w-10 h-8.5 flex items-center justify-center rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-background transition-all cursor-pointer flex-shrink-0"
               title="Add Server"
             >
               <span className="text-xl">+</span>
