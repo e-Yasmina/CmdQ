@@ -5,8 +5,13 @@ Handles schema extraction from the database and construction of prompt context s
 
 import json
 import re
+from typing import Optional
 from database import get_db_connection
 from sqlalchemy import text
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.language_models import BaseChatModel
+from pydantic import BaseModel, Field
 
 
 def extract_schema(db_type, host, port, user, password, database):
@@ -191,6 +196,46 @@ def build_chat_history_str(chat_history):
     return "Previous Conversation History:\n" + "\n".join(lines) + "\n\n"
 
 
+BASE_PROMPT_TEMPLATE = PromptTemplate(
+    input_variables=[
+        "database", "db_type", "metadata_str", "schema_json_str",
+        "protection_instruction", "session_context_instr",
+        "attached_str", "history_str", "user_prompt"
+    ],
+    template=(
+        "You are an autonomous AI database engineer. You are currently connected to the "
+        "'{database}' {db_type} database. "
+        "Unless the user explicitly specifies another database, assume all queries and operations "
+        "should be performed on the '{database}' database.\n"
+        "Given this database schema:\n"
+        "{metadata_str}\n"
+        "Schema JSON: {schema_json_str}\n\n"
+        "{protection_instruction}"
+        "{session_context_instr}"
+        "{attached_str}"
+        "IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches "
+        "often fail due to trailing spaces or casing. You MUST prioritize using their primary ID "
+        "(like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching "
+        "(e.g., ILIKE '%%name%%') and consider running an `-- INVESTIGATE` query first to fetch "
+        "their exact ID before proceeding.\n\n"
+        "{history_str}"
+        "User request: {user_prompt}\n\n"
+        "Provide your answer. IF you determine that a SQL query needs to be executed "
+        "(to read, insert, seed, or modify data), you MUST output it wrapped exactly in "
+        "```sql ... ``` block.\n"
+        "IMPORTANT: If you need to run a diagnostic SELECT query to investigate the schema or "
+        "data states before performing the final action, "
+        "you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will "
+        "execute it and give you the results so you can continue. "
+        "HOWEVER, investigation is ONLY a means to an end. You MUST eventually perform the final "
+        "action (INSERT, UPDATE, etc.) requested by the user in the same session. "
+        "Do NOT stop after an investigation; use the results to complete the task immediately.\n"
+        "CRITICAL: When you are completely finished with the ENTIRE task, you MUST output the "
+        "exact token: __CMDQ_DONE__"
+    )
+)
+
+
 def build_base_prompt(db_config, schema_dict, protected_items, session_context,
                       attached_file, chat_history, user_prompt):
     """Builds the complete base prompt for the AI from all context components."""
@@ -201,38 +246,17 @@ def build_base_prompt(db_config, schema_dict, protected_items, session_context,
     history_str = build_chat_history_str(chat_history)
     attached_str = get_attached_file_prompt(attached_file)
 
-    base_prompt = (
-        f"You are an autonomous AI database engineer. You are currently connected to the "
-        f"'{db_config.database}' {db_config.db_type} database. "
-        f"Unless the user explicitly specifies another database, assume all queries and operations "
-        f"should be performed on the '{db_config.database}' database.\n"
-        f"Given this database schema:\n"
-        f"{metadata_str}\n"
-        f"Schema JSON: {schema_json_str}\n\n"
-        f"{protection_instruction}"
-        f"{session_context_instr}"
-        f"{attached_str}"
-        f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches "
-        f"often fail due to trailing spaces or casing. You MUST prioritize using their primary ID "
-        f"(like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching "
-        f"(e.g., ILIKE '%%name%%') and consider running an `-- INVESTIGATE` query first to fetch "
-        f"their exact ID before proceeding.\n\n"
-        f"{history_str}"
-        f"User request: {user_prompt}\n\n"
-        f"Provide your answer. IF you determine that a SQL query needs to be executed "
-        f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in "
-        f"```sql ... ``` block.\n"
-        f"IMPORTANT: If you need to run a diagnostic SELECT query to investigate the schema or "
-        f"data states before performing the final action, "
-        f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will "
-        f"execute it and give you the results so you can continue. "
-        f"HOWEVER, investigation is ONLY a means to an end. You MUST eventually perform the final "
-        f"action (INSERT, UPDATE, etc.) requested by the user in the same session. "
-        f"Do NOT stop after an investigation; use the results to complete the task immediately.\n"
-        f"CRITICAL: When you are completely finished with the ENTIRE task, you MUST output the "
-        f"exact token: __CMDQ_DONE__"
+    return BASE_PROMPT_TEMPLATE.format(
+        database=db_config.database,
+        db_type=db_config.db_type,
+        metadata_str=metadata_str,
+        schema_json_str=schema_json_str,
+        protection_instruction=protection_instruction,
+        session_context_instr=session_context_instr,
+        attached_str=attached_str,
+        history_str=history_str,
+        user_prompt=user_prompt
     )
-    return base_prompt
 
 
 def extract_and_build_prompt(db_config, protected_items, session_context,
@@ -547,3 +571,57 @@ def build_mentioned_tables_context(db_type, host, port, user, password, database
 
     lines.append("")
     return "\n".join(lines)
+
+
+class SecurityAnalysis(BaseModel):
+    risk_level: str = Field(description="Overall risk level: low, medium, high, or critical")
+    findings: list[str] = Field(description="List of specific security findings")
+    recommendations: list[str] = Field(description="Actionable recommendations to address findings")
+
+
+class PerformanceAnalysis(BaseModel):
+    bottlenecks: list[str] = Field(description="Identified performance bottlenecks")
+    recommendations: list[str] = Field(description="Actionable tuning recommendations")
+    severity: str = Field(description="Overall performance severity: low, medium, high")
+
+
+class DataAnalysis(BaseModel):
+    data_quality_issues: list[str] = Field(description="Notable data quality or skew issues found")
+    structural_notes: list[str] = Field(description="Structural characteristics or schema observations")
+
+
+class SummaryAnalysis(BaseModel):
+    description: str = Field(description="Brief summary of the target's structure and footprint")
+    key_metrics: list[str] = Field(description="Key metrics that characterize the target")
+
+
+ANALYSIS_PARSERS = {
+    "security": PydanticOutputParser(pydantic_object=SecurityAnalysis),
+    "performance": PydanticOutputParser(pydantic_object=PerformanceAnalysis),
+    "data": PydanticOutputParser(pydantic_object=DataAnalysis),
+    "summary": PydanticOutputParser(pydantic_object=SummaryAnalysis),
+}
+
+
+def run_structured_analysis(llm: BaseChatModel, analysis_type: str, prompt: str) -> tuple[str, Optional[BaseModel]]:
+    """
+    Invokes the LLM with the given prompt and attempts to parse a structured response.
+    Returns (raw_text, structured_model_or_None).
+    The raw_text is always available as fallback.
+    """
+    parser = ANALYSIS_PARSERS.get(analysis_type)
+    if not parser:
+        response = llm.invoke(prompt)
+        return response.content, None
+
+    format_instructions = parser.get_format_instructions()
+    structured_prompt = f"{prompt}\n\nRespond in this format:\n{format_instructions}"
+
+    try:
+        response = llm.invoke(structured_prompt)
+        raw = response.content
+        parsed = parser.invoke(response)
+        return raw, parsed
+    except Exception:
+        response = llm.invoke(prompt)
+        return response.content, None
