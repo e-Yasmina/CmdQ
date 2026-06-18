@@ -412,6 +412,48 @@ class TestRegisterApiModel:
         assert resp.status_code == 422
 
 
+class TestRegisteredModelsEndpoints:
+    """Tests for GET and DELETE registered model endpoints."""
+
+    def test_list_registered_models_empty(self, isolate_file_storage):
+        resp = client.get("/ai/registered_models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+        assert body["models"] == []
+
+    def test_list_registered_models_with_data(self, isolate_file_storage):
+        client.post("/ai/register_api_model", json={
+            "id": "m1", "name": "M1", "provider": "openai",
+            "model": "gpt-4", "api_key": "sk-1"
+        })
+        resp = client.get("/ai/registered_models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["models"]) == 1
+        assert body["models"][0]["id"] == "m1"
+
+    def test_delete_registered_model(self, isolate_file_storage):
+        client.post("/ai/register_api_model", json={
+            "id": "m1", "name": "M1", "provider": "openai",
+            "model": "gpt-4", "api_key": "sk-1"
+        })
+        resp = client.delete("/ai/register_api_model/m1")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+
+        # Verify it's gone
+        resp = client.get("/ai/registered_models")
+        assert len(resp.json()["models"]) == 0
+
+    def test_delete_nonexistent_model(self, isolate_file_storage):
+        resp = client.delete("/ai/register_api_model/nonexistent")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "error"
+
+
 # ===========================================================================
 # 12-13.  POST /ai/launch_cli, /ai/launch_debug
 # ===========================================================================

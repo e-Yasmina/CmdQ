@@ -497,6 +497,11 @@ class RegisterAPIModel(BaseModel):
     api_key: str
     base_url: str = ""
 
+@app.get("/ai/registered_models")
+async def list_registered_models():
+    models = get_registered_models()
+    return {"status": "success", "models": models}
+
 @app.post("/ai/register_api_model")
 async def register_api_model(m: RegisterAPIModel):
     models = get_registered_models()
@@ -509,6 +514,15 @@ async def register_api_model(m: RegisterAPIModel):
     models.append(m.dict())
     save_registered_models(models)
     return {"status": "success", "message": "Registered new API Model."}
+
+@app.delete("/ai/register_api_model/{model_id}")
+async def delete_registered_model(model_id: str):
+    models = get_registered_models()
+    updated = [m for m in models if m["id"] != model_id]
+    if len(updated) == len(models):
+        return {"status": "error", "message": f"Model with id '{model_id}' not found."}
+    save_registered_models(updated)
+    return {"status": "success", "message": f"Deleted registered API Model '{model_id}'."}
 
 
 from process_manager import manager as process_manager

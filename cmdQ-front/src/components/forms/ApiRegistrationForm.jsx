@@ -1,9 +1,14 @@
 import { useState } from 'react';
 import { apiService } from '../../services/apiService';
 
-export default function ApiRegistrationForm({ onRegistered, onCancel }) {
+export default function ApiRegistrationForm({ onRegistered, onCancel, editModel }) {
     const [apiFormData, setApiFormData] = useState({
-        id: "", name: "", provider: "openai", model: "gpt-4o", base_url: "", api_key: ""
+        id: editModel?.id || "",
+        name: editModel?.name || "",
+        provider: editModel?.provider || "openai",
+        model: editModel?.model || "gpt-4o",
+        base_url: editModel?.base_url || "",
+        api_key: editModel?.api_key || ""
     });
     const [isLoading, setIsLoading] = useState(false);
 
@@ -18,10 +23,10 @@ export default function ApiRegistrationForm({ onRegistered, onCancel }) {
         }
         setIsLoading(true);
         try {
-            const newId = `api_${Date.now()}`;
-            const payload = { ...apiFormData, id: newId };
+            const id = editModel ? editModel.id : `api_${Date.now()}`;
+            const payload = { ...apiFormData, id };
             await apiService.registerApiCli(payload);
-            onRegistered(newId);
+            onRegistered(id);
         } catch (err) {
             alert("Registration Error: " + err.message);
         } finally {
@@ -34,7 +39,7 @@ export default function ApiRegistrationForm({ onRegistered, onCancel }) {
             <div className="bg-panel border border-border rounded-lg shadow-2xl p-6 w-96 flex flex-col gap-4">
                 <h2 className="text-xl font-bold text-primary flex justify-between items-center w-full">
                     <div className="flex items-center gap-2">
-                        <span className="text-2xl">🤖</span> Connect API Model
+                        <span className="text-2xl">🤖</span> {editModel ? "Edit API Model" : "Connect API Model"}
                     </div>
                     <button
                         onClick={onCancel}
@@ -112,7 +117,7 @@ export default function ApiRegistrationForm({ onRegistered, onCancel }) {
                         disabled={isLoading}
                         className="bg-primary text-background font-bold py-2 px-4 rounded hover:brightness-110 disabled:opacity-50 transition-all flex-1 cursor-pointer"
                     >
-                        {isLoading ? "Saving..." : "Connect Model"}
+                        {isLoading ? "Saving..." : editModel ? "Update Model" : "Connect Model"}
                     </button>
                 </div>
             </div>
