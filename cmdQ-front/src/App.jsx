@@ -1583,7 +1583,7 @@ function App() {
                     </button>
                   </div>
                 )}
-                // Registred API keys
+                {/* // Registred API keys */}
                 {registeredModels.length > 0 && (
                   <div className="flex items-center gap-1 ml-2 flex-wrap">
                     {registeredModels.map(model => (
