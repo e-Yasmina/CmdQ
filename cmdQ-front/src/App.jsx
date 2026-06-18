@@ -99,6 +99,8 @@ function App() {
 
   // API Model Registration State
   const [showApiModal, setShowApiModal] = useState(false);
+  const [registeredModels, setRegisteredModels] = useState([]);
+  const [editingModel, setEditingModel] = useState(null);
 
   // Persistence State
   const [savedQueries, setSavedQueries] = useState([]);
@@ -310,6 +312,7 @@ function App() {
 
     const checkBackend = () => {
       fetchClis(); // This also checks connectivity implicitly
+      fetchRegisteredModels();
       apiService.fetchClis()
         .then(() => setBackendStatus('connected'))
         .catch(() => setBackendStatus('error'));
@@ -922,8 +925,40 @@ function App() {
 
   const handleApiRegistered = (newId) => {
     setShowApiModal(false);
+    setEditingModel(null);
     fetchClis();
+    fetchRegisteredModels();
     setSelectedCli(newId);
+  };
+
+  const fetchRegisteredModels = () => {
+    apiService.fetchRegisteredModels()
+      .then(data => {
+        if (data.status === "success") {
+          setRegisteredModels(data.models);
+        }
+      })
+      .catch(err => console.error("Failed to fetch registered models:", err));
+  };
+
+  const handleEditModel = (model) => {
+    setEditingModel(model);
+    setShowApiModal(true);
+  };
+
+  const handleDeleteModel = (modelId, modelName) => {
+    if (!window.confirm(`Delete API model "${modelName}"? This cannot be undone.`)) return;
+    apiService.deleteApiModel(modelId)
+      .then(data => {
+        if (data.status === "success") {
+          fetchClis();
+          fetchRegisteredModels();
+          if (selectedCli === modelId) {
+            setSelectedCli("");
+          }
+        }
+      })
+      .catch(err => alert("Delete Error: " + err.message));
   };
 
   const launchAiAnalysis = async (type) => {
@@ -1156,7 +1191,7 @@ function App() {
       )}
 
       {showApiModal && (
-        <ApiRegistrationForm onCancel={() => setShowApiModal(false)} onRegistered={handleApiRegistered} />
+        <ApiRegistrationForm onCancel={() => { setShowApiModal(false); setEditingModel(null); }} onRegistered={handleApiRegistered} editModel={editingModel} />
       )}
 
 
@@ -1546,6 +1581,30 @@ function App() {
                     >
                       ×
                     </button>
+                  </div>
+                )}
+                // Registred API keys
+                {registeredModels.length > 0 && (
+                  <div className="flex items-center gap-1 ml-2 flex-wrap">
+                    {registeredModels.map(model => (
+                      <div key={model.id} className="flex items-center gap-1 bg-purple-500/10 border border-purple-500/30 rounded px-2 py-0.5 text-[10px]">
+                        <span className="text-purple-300 truncate max-w-[80px]" title={model.name}>{model.name}</span>
+                        <button
+                          onClick={() => handleEditModel(model)}
+                          className="text-purple-400 hover:text-white px-0.5"
+                          title="Edit"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => handleDeleteModel(model.id, model.name)}
+                          className="text-red-400 hover:text-white px-0.5"
+                          title="Delete"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

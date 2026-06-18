@@ -74,6 +74,22 @@ export const apiService = {
         return data;
     },
 
+    fetchRegisteredModels: async () => {
+        const res = await fetch(`${API_BASE_URL}/ai/registered_models`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to fetch registered models");
+        return data;
+    },
+
+    deleteApiModel: async (modelId) => {
+        const res = await fetch(`${API_BASE_URL}/ai/register_api_model/${modelId}`, {
+            method: "DELETE"
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Delete failed");
+        return data;
+    },
+
     launchAiPrompt: async (payload, signal) => {
         const res = await fetch(`${API_BASE_URL}/ai/prompt`, {
             method: "POST",
