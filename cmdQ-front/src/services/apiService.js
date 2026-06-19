@@ -119,6 +119,7 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Query failed");
+        if (data.status === "error") throw new Error(data.message || "Query failed");
         return data;
     },
 
