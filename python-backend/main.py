@@ -369,7 +369,10 @@ async def execute_query(req: QueryRequest):
                         except:
                             pass
             
+            import re
             result_proxy = conn.execute(text(req.query))
+            
+            rowcount = result_proxy.rowcount if result_proxy.rowcount > 0 else 0
             
             if result_proxy.returns_rows:
                 rows = result_proxy.fetchall()
@@ -380,8 +383,14 @@ async def execute_query(req: QueryRequest):
                     for k, v in zip(keys, row):
                         row_dict[k] = str(v) if v is not None else None
                     execution_results.append(row_dict)
+            
+            # Check if UPDATE/DELETE affected 0 rows
+            query_upper = req.query.strip().upper()
+            is_dml = query_upper.startswith("UPDATE") or query_upper.startswith("DELETE")
+            if is_dml and rowcount == 0:
+                return {"status": "warning", "data": execution_results, "rows_affected": 0, "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."}
         
-        return {"status": "success", "data": execution_results, "message": "Query executed successfully."}
+        return {"status": "success", "data": execution_results, "rows_affected": rowcount, "message": "Query executed successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {str(e)}"}
 
