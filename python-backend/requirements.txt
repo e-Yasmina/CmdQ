@@ -10,3 +10,7 @@ python-dotenv
 python-multipart
 httpx
 anyio
+langchain
+langchain-openai
+langchain-google-genai
+langchain-anthropic

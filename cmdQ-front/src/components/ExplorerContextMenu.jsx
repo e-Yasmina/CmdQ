@@ -20,6 +20,7 @@ export default function ExplorerContextMenu({ x, y, onClose, onAction, entity })
 
     if (entity.type === 'server') {
         menuItems = [
+            { id: 'import', label: 'Import Database', icon: '📥' },
             { id: 'rename', label: 'Rename', icon: '✏️' },
             { id: 'disconnect', label: 'Disconnect', icon: '🔌' },
             { id: 'refresh', label: 'Refresh', icon: '🔄' },

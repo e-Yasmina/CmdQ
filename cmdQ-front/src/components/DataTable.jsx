@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ScrollArea from './ScrollArea';
 import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
@@ -11,8 +11,19 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     const [mutationError, setMutationError] = useState("");
     const [showExportModal, setShowExportModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
+    const [showDbImportModal, setShowDbImportModal] = useState(false);
 
-    const canMutate = Boolean(activeConfig && activeSchemaName && activeTableName && onRefresh);
+    useEffect(() => {
+        setMutationError("");
+        setEditingCell(null);
+        setAddingRow(null);
+    }, [result]);
+
+    const effectiveSchema = activeSchemaName || result?.targetSchema;
+    const effectiveTable = activeTableName || result?.targetTable;
+    const canMutate = Boolean(activeConfig && effectiveSchema && effectiveTable && onRefresh);
+    const refSchema = effectiveSchema;
+    const refTable = effectiveTable;
 
     if (result?.loading) {
         return (
@@ -70,12 +81,16 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `UPDATE "${activeSchemaName}"."${activeTableName}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
+            const query = `UPDATE "${refSchema}"."${refTable}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
 
-            await apiService.executeQuery({
+            const response = await apiService.executeQuery({
                 query,
                 db_config: activeConfig
             });
+
+            if (response.rows_affected === 0) {
+                throw new Error("Update affected 0 rows. The row data may have changed since it was fetched, or the WHERE clause did not match any rows. Try re-running the query and editing again.");
+            }
 
             if (onLocalMutation) {
                 onLocalMutation('update', { rowIndex, updateKey, updateValue });
@@ -103,12 +118,16 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `DELETE FROM "${activeSchemaName}"."${activeTableName}" WHERE ${whereClause}`;
+            const query = `DELETE FROM "${refSchema}"."${refTable}" WHERE ${whereClause}`;
 
-            await apiService.executeQuery({
+            const response = await apiService.executeQuery({
                 query,
                 db_config: activeConfig
             });
+
+            if (response.rows_affected === 0) {
+                throw new Error("Delete affected 0 rows. The row data may have changed since it was fetched, or the WHERE clause did not match any rows. Try re-running the query and editing again.");
+            }
 
             if (onLocalMutation) {
                 onLocalMutation('delete', { row });
@@ -152,7 +171,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             const validColNames = validColNamesList.join(', ');
             const validValues = validValuesList.join(', ');
 
-            const query = `INSERT INTO "${activeSchemaName}"."${activeTableName}" (${validColNames}) VALUES (${validValues})`;
+            const query = `INSERT INTO "${refSchema}"."${refTable}" (${validColNames}) VALUES (${validValues})`;
 
             await apiService.executeQuery({
                 query,
@@ -239,6 +258,27 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         );
     };
 
+    const parseMutationError = (raw, targetTable) => {
+        if (!raw) return '';
+        let msg = raw;
+        msg = msg.replace(/^Query Failed:\s*/i, '');
+        msg = msg.replace(/^\([\w.]+\)\s*/, '');
+        const updateMatch = msg.match(/UPDATE\s+"?(\w+)"?\s*\.\s*"?(\w+)"?/i);
+        msg = msg.replace(/\s+LINE \d+:.*/s, '');
+        msg = msg.replace(/\s*\[SQL:.*/s, '');
+        msg = msg.replace(/\s*\(Background on this error.*$/s, '');
+        msg = msg.trim();
+        const tableName = updateMatch ? `${updateMatch[1]}.${updateMatch[2]}` : targetTable;
+        if (/pg_constraint|pg_catalog|information_schema/i.test(msg)) {
+            msg += '\n\nSystem catalogs cannot be updated directly. Use ALTER TABLE to modify constraints.';
+        } else if (tableName) {
+            msg += `\n\nTried to UPDATE "${tableName}" but it failed. Click the exact table in the schema explorer on the left to set the right target, then edit its data directly.`;
+        } else if (/does not exist/i.test(msg)) {
+            msg += '\n\nThe result may reference tables from a different schema or system views. Try selecting a table from the schema explorer before editing.';
+        }
+        return msg;
+    };
+
     const hasData = result.data && result.data.length > 0;
     const columns = hasData ? Object.keys(result.data[0]) : (result.columns || []);
 
@@ -251,6 +291,26 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                     <div className="bg-panel border border-border p-4 rounded shadow-lg text-primary font-bold animate-pulse">
                         Applying changes...
                     </div>
+                </div>
+            )}
+
+            {/* Mutation Error at the top */}
+            {mutationError && (
+                <div className="bg-red-500/20 border-2 border-red-500/70 text-red-300 p-3 rounded-lg text-xs shrink-0 shadow-lg flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                        <div className="font-bold text-red-200 uppercase tracking-wide text-[11px] mb-1">
+                            ✕ Update Failed
+                        </div>
+                        <div className="font-code leading-relaxed break-words">
+                            {parseMutationError(mutationError, `${refSchema}.${refTable}`)}
+                        </div>
+                    </div>
+                    <button
+                        className="text-red-400 hover:text-white font-bold text-sm leading-none shrink-0 mt-0.5"
+                        onClick={() => setMutationError("")}
+                    >
+                        ✕
+                    </button>
                 </div>
             )}
 
@@ -364,14 +424,6 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </ScrollArea>
             )}
 
-            {/* Error Output */}
-            {mutationError && (
-                <div className="bg-red-500/20 border border-red-500 text-red-400 p-2 rounded text-xs mt-2 shrink-0">
-                    Error: {mutationError}
-                    <button className="float-right font-bold text-red-300 hover:text-white" onClick={() => setMutationError("")}>X</button>
-                </div>
-            )}
-
             {/* SQL Executed */}
             {result.extracted_sql && (
                 <div className="mt-2 shrink-0">
@@ -398,7 +450,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                     {(result.hasRls || !result.isTableClick) && (
                         <>
                             <button 
-                                onClick={() => onDiagnose && onDiagnose(activeSchemaName, activeTableName)}
+                                onClick={() => onDiagnose && onDiagnose(refSchema, refTable)}
                                 className="bg-cyan-500/10 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500 hover:text-black px-4 py-2 rounded text-xs font-bold transition-all flex items-center gap-2"
                             >
                                 🔐 Diagnose ERLS / Protection
@@ -441,25 +493,45 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
+            {hasData && (
+                <div className="flex justify-end mt-2 shrink-0 gap-2">
+                    <button
+                        onClick={() => setShowDbImportModal(true)}
+                        className="bg-panel border border-border hover:bg-white/5 text-secondary px-3 py-1.5 text-xs font-bold rounded transition-colors shadow-sm"
+                    >
+                        📥 Import SQL File
+                    </button>
+                </div>
+            )}
+
             {showExportModal && (
                 <ExportForm
                     isDatabase={false}
-                    targetName={activeTableName || activeSchemaName}
+                    targetName={refTable || refSchema}
                     activeConfig={activeConfig}
-                    schemaName={activeSchemaName}
-                    tableName={activeTableName}
+                    schemaName={refSchema}
+                    tableName={refTable}
                     onCancel={() => setShowExportModal(false)}
                 />
             )}
             {showImportModal && (
                 <ImportForm
                     isDatabase={false}
-                    targetName={activeTableName || activeSchemaName}
+                    targetName={refTable || refSchema}
                     activeConfig={activeConfig}
-                    schemaName={activeSchemaName}
-                    tableName={activeTableName}
+                    schemaName={refSchema}
+                    tableName={refTable}
                     onCancel={() => setShowImportModal(false)}
                     onSuccess={onRefresh}
+                />
+            )}
+            {showDbImportModal && activeConfig && (
+                <ImportForm
+                    isDatabase={true}
+                    targetName={activeConfig.database}
+                    activeConfig={activeConfig}
+                    onCancel={() => setShowDbImportModal(false)}
+                    onSuccess={() => setShowDbImportModal(false)}
                 />
             )}
         </ScrollArea>

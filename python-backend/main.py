@@ -18,6 +18,7 @@ import time
 import traceback
 import uvicorn
 from database import get_db_connection
+from db_context_builder import extract_schema, extract_relationships, build_base_prompt, parse_table_mentions, build_mentioned_tables_context
 from sqlalchemy import text, create_engine, MetaData, Table, select
 from sqlalchemy.schema import CreateTable
 from persistence_manager import storage
@@ -70,10 +71,13 @@ class AIPrompt(BaseModel):
     prompt: str
     command: str
     db_config: ConnectionDetails
-    schema_data: Dict[str, Any]
+    schema_data: Dict[str, Any] = None
     chat_history: List[ChatMessage] = []
     protected_items: List[str] = []
     session_context: List[str] = []
+    attached_file: Dict[str, Any] = None
+    selected_table: str = ""
+    action: str = ""
 
 class SecurityAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
@@ -248,114 +252,16 @@ async def drop_database(req: DropDatabaseRequest):
 async def get_schema(details: ConnectionDetails):
     """Executes SELECT queries against information_schema in read-only mode."""
     try:
-        session = get_db_connection(
+        schema_dict = extract_schema(
             db_type=details.db_type,
             host=details.host,
             port=details.port,
             user=details.user,
             password=details.password,
-            dbname=details.database
+            database=details.database
         )
-        
-        schema_dict = {}
-        if details.db_type == "postgres":
-            query = """
-                SELECT 
-                    c.table_schema, 
-                    c.table_name, 
-                    c.column_name,
-                    pgc.relrowsecurity as has_rls
-                FROM information_schema.columns c
-                JOIN information_schema.tables t 
-                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
-                JOIN pg_class pgc ON pgc.relname = t.table_name
-                JOIN pg_namespace pgn ON pgn.oid = pgc.relnamespace AND pgn.nspname = t.table_schema
-                WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
-                  AND t.table_type = 'BASE TABLE'
-                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
-            """
-        else:
-            query = """
-                SELECT c.table_schema, c.table_name, c.column_name, false as has_rls
-                FROM information_schema.columns c
-                JOIN information_schema.tables t 
-                  ON c.table_schema = t.table_schema AND c.table_name = t.table_name
-                WHERE c.table_schema = DATABASE()
-                  AND t.table_type = 'BASE TABLE'
-                ORDER BY c.table_schema, c.table_name, c.ordinal_position;
-            """
-            
-        result = session.execute(text(query)).fetchall()
-        for row in result:
-            schema_name, table_name, col_name, has_rls = row[0], row[1], row[2], row[3]
-            if schema_name not in schema_dict:
-                schema_dict[schema_name] = {}
-            if table_name not in schema_dict[schema_name]:
-                schema_dict[schema_name][table_name] = {"columns": [], "has_rls": bool(has_rls), "constraints": []}
-            schema_dict[schema_name][table_name]["columns"].append(col_name)
-            
-        # Fetch constraints
-        if details.db_type == "postgres":
-            constr_query = """
-                SELECT 
-                    tc.table_schema, 
-                    tc.table_name, 
-                    tc.constraint_name, 
-                    tc.constraint_type,
-                    pg_get_constraintdef(c.oid) AS definition
-                FROM information_schema.table_constraints AS tc
-                JOIN pg_namespace n ON n.nspname = tc.table_schema
-                JOIN pg_class cl ON cl.relname = tc.table_name AND cl.relnamespace = n.oid
-                JOIN pg_constraint c ON c.conrelid = cl.oid AND c.conname = tc.constraint_name
-                WHERE tc.table_schema NOT IN ('information_schema', 'pg_catalog');
-            """
-        else:
-            constr_query = """
-                SELECT table_schema, table_name, constraint_name, constraint_type, '' as definition
-                FROM information_schema.table_constraints
-                WHERE table_schema = DATABASE();
-            """
-        
-        constr_result = session.execute(text(constr_query)).fetchall()
-        print(f"DEBUG: Found {len(constr_result)} constraints in total.")
-        matched_count = 0
-        unmatched_samples = []
-        for row in constr_result:
-            s_name, t_name, c_name, c_type, c_def = str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4])
-            
-            # 1. Try exact match
-            if s_name in schema_dict and t_name in schema_dict[s_name]:
-                schema_dict[s_name][t_name]["constraints"].append({
-                    "name": c_name, 
-                    "type": c_type,
-                    "definition": c_def
-                })
-                matched_count += 1
-                continue
-                
-            # 2. Try lowercase match
-            s_low, t_low = s_name.lower(), t_name.lower()
-            s_match = next((k for k in schema_dict.keys() if k.lower() == s_low), None)
-            if s_match:
-                t_match = next((k for k in schema_dict[s_match].keys() if k.lower() == t_low), None)
-                if t_match:
-                    schema_dict[s_match][t_match]["constraints"].append({
-                        "name": c_name, 
-                        "type": c_type,
-                        "definition": c_def
-                    })
-                    matched_count += 1
-                    continue
-            
-            if len(unmatched_samples) < 5:
-                unmatched_samples.append(f"{s_name}.{t_name}")
-                
-        print(f"DEBUG: Matched {matched_count} constraints. Unmatched samples: {unmatched_samples}")
-
-        session.close()
         return {"status": "success", "schema": schema_dict}
     except Exception as e:
-        session.close() # Ensure closure on error
         raise HTTPException(status_code=400, detail=f"Schema extraction failed: {str(e)}")
 
 @app.post("/analyze/protection")
@@ -463,7 +369,10 @@ async def execute_query(req: QueryRequest):
                         except:
                             pass
             
+            import re
             result_proxy = conn.execute(text(req.query))
+            
+            rowcount = result_proxy.rowcount if result_proxy.rowcount > 0 else 0
             
             if result_proxy.returns_rows:
                 rows = result_proxy.fetchall()
@@ -474,8 +383,14 @@ async def execute_query(req: QueryRequest):
                     for k, v in zip(keys, row):
                         row_dict[k] = str(v) if v is not None else None
                     execution_results.append(row_dict)
+            
+            # Check if UPDATE/DELETE affected 0 rows
+            query_upper = req.query.strip().upper()
+            is_dml = query_upper.startswith("UPDATE") or query_upper.startswith("DELETE")
+            if is_dml and rowcount == 0:
+                return {"status": "warning", "data": execution_results, "rows_affected": 0, "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."}
         
-        return {"status": "success", "data": execution_results, "message": "Query executed successfully."}
+        return {"status": "success", "data": execution_results, "rows_affected": rowcount, "message": "Query executed successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {str(e)}"}
 
@@ -591,6 +506,11 @@ class RegisterAPIModel(BaseModel):
     api_key: str
     base_url: str = ""
 
+@app.get("/ai/registered_models")
+async def list_registered_models():
+    models = get_registered_models()
+    return {"status": "success", "models": models}
+
 @app.post("/ai/register_api_model")
 async def register_api_model(m: RegisterAPIModel):
     models = get_registered_models()
@@ -603,6 +523,15 @@ async def register_api_model(m: RegisterAPIModel):
     models.append(m.dict())
     save_registered_models(models)
     return {"status": "success", "message": "Registered new API Model."}
+
+@app.delete("/ai/register_api_model/{model_id}")
+async def delete_registered_model(model_id: str):
+    models = get_registered_models()
+    updated = [m for m in models if m["id"] != model_id]
+    if len(updated) == len(models):
+        return {"status": "error", "message": f"Model with id '{model_id}' not found."}
+    save_registered_models(updated)
+    return {"status": "success", "message": f"Deleted registered API Model '{model_id}'."}
 
 
 from process_manager import manager as process_manager
@@ -738,6 +667,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
         return {"status": "error", "message": str(e)}
 
     ai_summary = ""
+    structured_analysis = None
     # Only invoke AI if command is provided
     if req.command:
         raw_json_metrics = json.dumps(metrics)
@@ -750,33 +680,15 @@ async def analyze_security(req: SecurityAnalysisRequest):
             output = ""
             
             if selected_api_model:
-                provider = selected_api_model["provider"]
-                api_key = selected_api_model["api_key"]
-                model_name = selected_api_model["model"]
-                base_url = selected_api_model.get("base_url") or ""
-                
-                if provider in ["openai", "custom_openai"]:
-                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
-                elif provider == "gemini":
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
-                elif provider == "anthropic":
-                    url = "https://api.anthropic.com/v1/messages"
-                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
-                
-                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                with urllib.request.urlopen(req_obj) as response:
-                    res_data = json.loads(response.read().decode("utf-8"))
-                    if provider in ["openai", "custom_openai"]:
-                        output = res_data["choices"][0]["message"]["content"]
-                    elif provider == "gemini":
-                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                    elif provider == "anthropic":
-                        output = res_data["content"][0]["text"]
+                from llm_client import get_llm
+                from db_context_builder import run_structured_analysis
+                llm = get_llm(
+                    provider=selected_api_model["provider"],
+                    api_key=selected_api_model["api_key"],
+                    model=selected_api_model["model"],
+                    base_url=selected_api_model.get("base_url") or ""
+                )
+                output, structured_analysis = run_structured_analysis(llm, "security", prompt_str)
             else:
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
@@ -791,12 +703,12 @@ async def analyze_security(req: SecurityAnalysisRequest):
                     output = result.stdout.strip()
                     try: os.remove(pf)
                     except: pass
-                        
+
             ai_summary = output
         except Exception as e:
             ai_summary = f"Failed to generate AI analysis: {str(e)}"
-            
-    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
 @app.post("/analyze/performance")
 async def analyze_performance(req: PerformanceAnalysisRequest):
@@ -929,6 +841,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
         return {"status": "error", "message": str(e)}
 
     ai_summary = ""
+    structured_analysis = None
     if req.command:
         raw_json_metrics = json.dumps(metrics)
         prompt_str = f"Analyze these performance metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify bottlenecks based on cache hit ratio, index usage, active connections, or lock conflicts. Provide a brief actionable performance tuning assessment. Don't mention specific commands, just the tuning concept. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
@@ -940,33 +853,15 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
             output = ""
             
             if selected_api_model:
-                provider = selected_api_model["provider"]
-                api_key = selected_api_model["api_key"]
-                model_name = selected_api_model["model"]
-                base_url = selected_api_model.get("base_url") or ""
-                
-                if provider in ["openai", "custom_openai"]:
-                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
-                elif provider == "gemini":
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
-                elif provider == "anthropic":
-                    url = "https://api.anthropic.com/v1/messages"
-                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
-                
-                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                with urllib.request.urlopen(req_obj) as response:
-                    res_data = json.loads(response.read().decode("utf-8"))
-                    if provider in ["openai", "custom_openai"]:
-                        output = res_data["choices"][0]["message"]["content"]
-                    elif provider == "gemini":
-                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                    elif provider == "anthropic":
-                        output = res_data["content"][0]["text"]
+                from llm_client import get_llm
+                from db_context_builder import run_structured_analysis
+                llm = get_llm(
+                    provider=selected_api_model["provider"],
+                    api_key=selected_api_model["api_key"],
+                    model=selected_api_model["model"],
+                    base_url=selected_api_model.get("base_url") or ""
+                )
+                output, structured_analysis = run_structured_analysis(llm, "performance", prompt_str)
             else:
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
@@ -986,7 +881,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
         except Exception as e:
             ai_summary = f"Failed to generate AI performance insight: {str(e)}"
             
-    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
 @app.post("/analyze/data")
 async def analyze_data(req: DataAnalysisRequest):
@@ -1097,6 +992,7 @@ async def analyze_data(req: DataAnalysisRequest):
         return {"status": "error", "message": str(e)}
 
     ai_summary = ""
+    structured_analysis = None
     if req.command:
         raw_json_metrics = json.dumps(metrics)
         prompt_str = f"Analyze these data quality and volume metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify any notable data skew, missing values, fill rates, unique ratios, or table sizing insights. Provide a concise data assessment emphasizing structural characteristics or potential data quality red flags. Do not mention any of the files, backend code, or python files you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
@@ -1108,33 +1004,15 @@ async def analyze_data(req: DataAnalysisRequest):
             output = ""
             
             if selected_api_model:
-                provider = selected_api_model["provider"]
-                api_key = selected_api_model["api_key"]
-                model_name = selected_api_model["model"]
-                base_url = selected_api_model.get("base_url") or ""
-                
-                if provider in ["openai", "custom_openai"]:
-                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
-                elif provider == "gemini":
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
-                elif provider == "anthropic":
-                    url = "https://api.anthropic.com/v1/messages"
-                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
-                
-                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                with urllib.request.urlopen(req_obj) as response:
-                    res_data = json.loads(response.read().decode("utf-8"))
-                    if provider in ["openai", "custom_openai"]:
-                        output = res_data["choices"][0]["message"]["content"]
-                    elif provider == "gemini":
-                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                    elif provider == "anthropic":
-                        output = res_data["content"][0]["text"]
+                from llm_client import get_llm
+                from db_context_builder import run_structured_analysis
+                llm = get_llm(
+                    provider=selected_api_model["provider"],
+                    api_key=selected_api_model["api_key"],
+                    model=selected_api_model["model"],
+                    base_url=selected_api_model.get("base_url") or ""
+                )
+                output, structured_analysis = run_structured_analysis(llm, "data", prompt_str)
             else:
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
@@ -1154,7 +1032,7 @@ async def analyze_data(req: DataAnalysisRequest):
         except Exception as e:
             ai_summary = f"Failed to generate AI output: {str(e)}"
             
-    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
 @app.post("/analyze/summary")
 async def analyze_summary(req: SummaryAnalysisRequest):
@@ -1246,6 +1124,7 @@ async def analyze_summary(req: SummaryAnalysisRequest):
         return {"status": "error", "message": str(e)}
 
     ai_summary = ""
+    structured_analysis = None
     if req.command:
         raw_json_metrics = json.dumps(metrics)
         prompt_str = f"Provide a comprehensive summary about the {metrics['level']} '{metrics['target']}', based on these metrics: {raw_json_metrics}. Briefly describe its structure, schema complexity, or overall footprint. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the summary directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
@@ -1257,33 +1136,15 @@ async def analyze_summary(req: SummaryAnalysisRequest):
             output = ""
             
             if selected_api_model:
-                provider = selected_api_model["provider"]
-                api_key = selected_api_model["api_key"]
-                model_name = selected_api_model["model"]
-                base_url = selected_api_model.get("base_url") or ""
-                
-                if provider in ["openai", "custom_openai"]:
-                    url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
-                elif provider == "gemini":
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
-                elif provider == "anthropic":
-                    url = "https://api.anthropic.com/v1/messages"
-                    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                    payload_data = {"model": model_name, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt_str}]}
-                
-                req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                with urllib.request.urlopen(req_obj) as response:
-                    res_data = json.loads(response.read().decode("utf-8"))
-                    if provider in ["openai", "custom_openai"]:
-                        output = res_data["choices"][0]["message"]["content"]
-                    elif provider == "gemini":
-                        output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                    elif provider == "anthropic":
-                        output = res_data["content"][0]["text"]
+                from llm_client import get_llm
+                from db_context_builder import run_structured_analysis
+                llm = get_llm(
+                    provider=selected_api_model["provider"],
+                    api_key=selected_api_model["api_key"],
+                    model=selected_api_model["model"],
+                    base_url=selected_api_model.get("base_url") or ""
+                )
+                output, structured_analysis = run_structured_analysis(llm, "summary", prompt_str)
             else:
                 # One-shot CLI execution
                 cmd_lower = cmd_to_run.lower()
@@ -1303,7 +1164,7 @@ async def analyze_summary(req: SummaryAnalysisRequest):
         except Exception as e:
             ai_summary = f"Failed to generate AI output: {str(e)}"
             
-    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary}
+    return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
 class TranslateRequest(BaseModel):
     command: str
@@ -1319,35 +1180,17 @@ def translate_table(req: TranslateRequest):
         models = get_registered_models()
         selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
         output = ""
-        
+
         if selected_api_model:
-            provider = selected_api_model["provider"]
-            api_key = selected_api_model["api_key"]
-            model_name = selected_api_model["model"]
-            base_url = selected_api_model.get("base_url") or ""
-            
-            if provider in ["openai", "custom_openai"]:
-                url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                payload_data = {"model": model_name, "messages": [{"role": "user", "content": prompt_str}]}
-            elif provider == "gemini":
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                headers = {"Content-Type": "application/json"}
-                payload_data = {"contents": [{"parts": [{"text": prompt_str}]}]}
-            elif provider == "anthropic":
-                url = "https://api.anthropic.com/v1/messages"
-                headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                payload_data = {"model": model_name, "max_tokens": 8192, "messages": [{"role": "user", "content": prompt_str}]}
-            
-            req_obj = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req_obj, timeout=300) as response:
-                res_data = json.loads(response.read().decode("utf-8"))
-                if provider in ["openai", "custom_openai"]:
-                    output = res_data["choices"][0]["message"]["content"]
-                elif provider == "gemini":
-                    output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                elif provider == "anthropic":
-                    output = res_data["content"][0]["text"]
+            from llm_client import get_llm
+            llm = get_llm(
+                provider=selected_api_model["provider"],
+                api_key=selected_api_model["api_key"],
+                model=selected_api_model["model"],
+                base_url=selected_api_model.get("base_url") or ""
+            )
+            response = llm.invoke(prompt_str)
+            output = response.content
         else:
             import tempfile
             try:
@@ -1367,12 +1210,12 @@ def translate_table(req: TranslateRequest):
                                 node_script = os.path.normpath(node_script)
                         except:
                             pass
-                    
+
                     if node_script and os.path.exists(node_script):
                         run_cmd = ["node", node_script, "-p", prompt_str]
                     else:
                         run_cmd = [cmd_to_run, "-p", prompt_str[:7000]]
-                        
+
                     result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=300)
                     output = result.stdout.strip()
                 else:
@@ -1402,7 +1245,7 @@ def translate_table(req: TranslateRequest):
 
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
-    """Takes user's prompt + JSON schema, constructs context window, calls subprocess, extracts/runs SQL."""
+    """Takes user's prompt, fetches schema from DB, constructs context, calls AI, extracts/runs SQL."""
     try:
         cfg = payload.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
@@ -1416,50 +1259,87 @@ async def ai_prompt(payload: AIPrompt):
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
 
-        schema_metadata = []
-        if isinstance(payload.schema_data, dict):
-            for s_name, tables in payload.schema_data.items():
-                if isinstance(tables, dict):
-                    schema_metadata.append(f"Schema '{s_name}' contains exactly {len(tables)} tables.")
-        metadata_str = " ".join(schema_metadata)
+        user_prompt = payload.prompt
 
-        history_str = ""
-        if payload.chat_history:
-            history_str = "Previous Conversation History:\n" + "\n".join([f"{msg.role}: {msg.content}" for msg in payload.chat_history]) + "\n\n"
+        mentions = parse_table_mentions(payload.prompt)
 
-        # Truncate metadata if it's obscenely large to prevent stdin saturation
-        schema_json_str = json.dumps(payload.schema_data)
-        if len(schema_json_str) > 10000:
-            schema_json_str = schema_json_str[:10000] + "... [TRUNCATED]"
-            
-        protection_instruction = ""
-        if payload.protected_items:
-            prot_list = ", ".join([f"'{p.split('::')[-1]}'" for p in payload.protected_items])
-            protection_instruction = f"URGENT ABSOLUTE RULE: The following databases, schemas, or tables are PROTECTED and strictly forbidden to be accessed or modified: {prot_list}. You MUST NEVER generate queries targeting them.\n\n"
+        for schema_name, table_name in mentions:
+            user_prompt = user_prompt.replace(f"@{schema_name}.{table_name}", f"{schema_name}.{table_name}")
 
-        session_context_instr = ""
-        if payload.session_context:
-            ctx_cmds = "\n".join(payload.session_context)
-            session_context_instr = f"ACTIVE SESSION CONTEXT (These commands are automatically executed before your generated SQL, so you don't need to repeat them):\n{ctx_cmds}\n\n"
+        schema_dict = extract_schema(
+            db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+            user=cfg.user, password=cfg.password, database=cfg.database
+        )
 
-        base_prompt = (
-            f"You are an autonomous AI database engineer. You are currently connected to the '{cfg.database}' {cfg.db_type} database. "
-            f"Unless the user explicitly specifies another database, assume all queries and operations should be performed on the '{cfg.database}' database.\n"
-            f"Given this database schema:\n"
-            f"{metadata_str}\n"
-            f"Schema JSON: {schema_json_str}\n\n"
-            f"{protection_instruction}"
-            f"{session_context_instr}"
-            f"IMPORTANT: When filtering by names (e.g., first_name, last_name), exact string matches often fail due to trailing spaces or casing. You MUST prioritize using their primary ID (like employee_id) if available. If you only have a name, ALWAYS use fuzzy matching (e.g., ILIKE '%name%') and consider running an `-- INVESTIGATE` query first to fetch their exact ID before proceeding.\n\n"
-            f"{history_str}"
-            f"User request: {payload.prompt}\n\n"
-            f"Provide your answer. IF you determine that a SQL query needs to be executed "
-            f"(to read, insert, seed, or modify data), you MUST output it wrapped exactly in ```sql ... ``` block.\n"
-            f"IMPORTANT: If you need to run a diagnostic SELECT query to investigate the schema or data states before performing the final action, "
-            f"you MUST add the exact comment `-- INVESTIGATE` inside your SQL block. The system will execute it and give you the results so you can continue. "
-            f"HOWEVER, investigation is ONLY a means to an end. You MUST eventually perform the final action (INSERT, UPDATE, etc.) requested by the user in the same session. "
-            f"Do NOT stop after an investigation; use the results to complete the task immediately.\n"
-            f"CRITICAL: When you are completely finished with the ENTIRE task, you MUST output the exact token: __CMDQ_DONE__"
+        target_table = None
+        if payload.selected_table:
+            parts = payload.selected_table.split(".", 1)
+            target_table = tuple(parts) if len(parts) == 2 else ("public", parts[0])
+        elif mentions:
+            target_table = mentions[0]
+
+        all_relationships = None
+        mentions_context = ""
+        if mentions:
+            all_relationships = extract_relationships(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database
+            )
+            mentions_context = build_mentioned_tables_context(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database,
+                mentions=mentions, schema_dict=schema_dict,
+                all_relationships=all_relationships,
+                target_table=target_table
+            )
+
+        if target_table:
+            t_schema, t_table = target_table
+
+            if all_relationships is None:
+                all_relationships = extract_relationships(
+                    db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                    user=cfg.user, password=cfg.password, database=cfg.database
+                )
+
+            related = {(t_schema, t_table)}
+            for rel in all_relationships:
+                if rel["source_schema"] == t_schema and rel["source_table"] == t_table:
+                    related.add((rel["referenced_schema"], rel["referenced_table"]))
+                if rel["referenced_schema"] == t_schema and rel["referenced_table"] == t_table:
+                    related.add((rel["source_schema"], rel["source_table"]))
+
+            focused = {}
+            for s_name, tables in schema_dict.items():
+                for t_name, t_info in tables.items():
+                    if (s_name, t_name) in related:
+                        if s_name not in focused:
+                            focused[s_name] = {}
+                        focused[s_name][t_name] = t_info
+            schema_dict = focused
+
+        prompt_parts = [user_prompt]
+        if mentions_context:
+            prompt_parts.append(mentions_context)
+        if payload.selected_table:
+            prefix = f"[Table: {payload.selected_table}"
+            if payload.action:
+                prefix += f", Action: {payload.action}"
+            prefix += "]\n"
+            prompt_parts.insert(0, prefix)
+        elif payload.action and mentions:
+            prefix = f"[Action: {payload.action} on target table from @mentions]\n"
+            prompt_parts.insert(0, prefix)
+        user_prompt = "\n".join(prompt_parts)
+
+        base_prompt = build_base_prompt(
+            db_config=cfg,
+            schema_dict=schema_dict,
+            protected_items=payload.protected_items,
+            session_context=payload.session_context,
+            attached_file=payload.attached_file,
+            chat_history=payload.chat_history,
+            user_prompt=user_prompt
         )
 
         cmd_to_run = payload.command
@@ -1469,311 +1349,117 @@ async def ai_prompt(payload: AIPrompt):
         # This completely bypasses Windows CMD's 8191 character argument limit.
         import tempfile
         
-        MAX_RETRIES = 5
-        current_prompt = base_prompt
-        output = ""
-        error_output = ""
-        extracted_sql = None
-        execution_results = []
         models = get_registered_models()
-        # We bypass API matching if the command looks like an absolute path or a specific CLI binary
         is_direct_cli = "\\" in cmd_to_run or "/" in cmd_to_run or cmd_to_run.endswith((".exe", ".cmd", ".bat", ".ps1"))
         selected_api_model = None
         if not is_direct_cli:
             selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-            
-        for attempt in range(MAX_RETRIES):
-            print(f"DEBUG: AI prompt attempt {attempt+1}/{MAX_RETRIES} using model/cmd: '{cmd_to_run}'")
-            if selected_api_model:
-                try:
-                    provider = selected_api_model["provider"]
-                    api_key = selected_api_model["api_key"]
-                    model_name = selected_api_model["model"]
-                    base_url = selected_api_model.get("base_url") or ""
-                    
-                    if provider in ["openai", "custom_openai"]:
-                        url = f"{base_url.rstrip('/')}/chat/completions" if provider == "custom_openai" else "https://api.openai.com/v1/chat/completions"
-                        headers = {
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json"
-                        }
-                        payload_data = {
-                            "model": model_name,
-                            "messages": [{"role": "user", "content": current_prompt}]
-                        }
-                    elif provider == "gemini":
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-                        headers = {"Content-Type": "application/json"}
-                        payload_data = {
-                            "contents": [{"parts": [{"text": current_prompt}]}]
-                        }
-                    elif provider == "anthropic":
-                        url = "https://api.anthropic.com/v1/messages"
-                        headers = {
-                            "x-api-key": api_key,
-                            "anthropic-version": "2023-06-01",
-                            "Content-Type": "application/json"
-                        }
-                        payload_data = {
-                            "model": model_name,
-                            "max_tokens": 4096,
-                            "messages": [{"role": "user", "content": current_prompt}]
-                        }
-                    else:
-                        raise ValueError(f"Unknown provider: {provider}")
 
-                    req = urllib.request.Request(url, data=json.dumps(payload_data).encode("utf-8"), headers=headers, method="POST")
-                    with urllib.request.urlopen(req, timeout=60) as response:
-                        res_data = json.loads(response.read().decode("utf-8"))
-                        if provider in ["openai", "custom_openai"]:
-                            output = res_data["choices"][0]["message"]["content"]
-                        elif provider == "gemini":
-                            output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                        elif provider == "anthropic":
-                            output = res_data["content"][0]["text"]
-                        error_output = ""
-                except Exception as api_err:
-                    error_output = str(api_err)
-                    if hasattr(api_err, "read"):
-                        error_output += f" - {api_err.read().decode('utf-8')}"
-                    output = ""
+        output = ""
+        extracted_sql = None
+        execution_results = []
+
+        if selected_api_model:
+            from llm_client import get_llm
+            from agent_tools import create_sql_agent
+            llm = get_llm(
+                provider=selected_api_model["provider"],
+                api_key=selected_api_model["api_key"],
+                model=selected_api_model["model"],
+                base_url=selected_api_model.get("base_url") or ""
+            )
+            agent = create_sql_agent(
+                llm=llm,
+                system_prompt=base_prompt,
+                db_config=cfg,
+                protected_items=payload.protected_items,
+                session_context=payload.session_context
+            )
+            result = agent.invoke({"messages": [{"role": "user", "content": payload.prompt}]})
+            messages = result.get("messages", [])
+            if messages:
+                last = messages[-1]
+                output = last.content if hasattr(last, "content") else str(last)
             else:
-                # One-shot CLI execution.
-                # Gemini CLI requires -p/--prompt for non-interactive mode.
-                # Windows .CMD wrappers have an 8191 char limit, so we resolve
-                # them to the underlying Node.js script and call node directly.
-                import tempfile
-                
-                try:
-                    cmd_lower = cmd_to_run.lower()
-                    if "gemini" in cmd_lower:
-                        # Resolve .CMD wrapper to underlying Node.js script
-                        node_script = None
-                        if cmd_to_run.lower().endswith((".cmd", ".bat")):
+                output = ""
+
+            for i, msg in enumerate(messages):
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                for tc in tool_calls:
+                    if tc.get("name") == "execute_sql":
+                        extracted_sql = tc.get("args", {}).get("query", "")
+                        if i + 1 < len(messages):
+                            obs_msg = messages[i + 1]
+                            obs = obs_msg.content if hasattr(obs_msg, "content") else ""
                             try:
-                                with open(cmd_to_run, "r") as f:
-                                    cmd_content = f.read()
-                                # Look for: node "...node_modules\...\index.js" %*
-                                import re as re_mod
-                                match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
-                                if match:
-                                    raw = match.group(1)
-                                    # Replace %dp0% or %~dp0 or %dp0 with the directory of the .CMD file
-                                    cmd_dir = os.path.dirname(cmd_to_run)
-                                    node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
-                                    node_script = os.path.normpath(node_script)
-                            except:
-                                pass
-                        
-                        if node_script and os.path.exists(node_script):
-                            # Direct node invocation - NO command line length limit
-                            run_cmd = ["node", node_script, "-p", current_prompt]
-                            print(f"DEBUG: Gemini direct node: node {os.path.basename(node_script)} -p '<{len(current_prompt)} chars>'")
-                        else:
-                            # Fallback: use .CMD with truncated prompt
-                            truncated = current_prompt[:7000]
-                            run_cmd = [cmd_to_run, "-p", truncated]
-                            print(f"DEBUG: Gemini .CMD fallback (truncated to {len(truncated)} chars)")
-                        
-                        result = subprocess.run(
-                            run_cmd,
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                            env=env
-                        )
-                        output = result.stdout.strip()
-                        error_output = result.stderr.strip() if result.stderr else ""
+                                parsed = json.loads(obs)
+                                execution_results = parsed if isinstance(parsed, list) else [parsed]
+                            except (json.JSONDecodeError, TypeError):
+                                execution_results = [{"result": obs}]
+        else:
+            import tempfile
+            try:
+                cmd_lower = cmd_to_run.lower()
+                if "gemini" in cmd_lower:
+                    node_script = None
+                    if cmd_to_run.lower().endswith((".cmd", ".bat")):
+                        try:
+                            with open(cmd_to_run, "r") as f:
+                                cmd_content = f.read()
+                            import re as re_mod
+                            match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
+                            if match:
+                                raw = match.group(1)
+                                cmd_dir = os.path.dirname(cmd_to_run)
+                                node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
+                                node_script = os.path.normpath(node_script)
+                        except:
+                            pass
+
+                    if node_script and os.path.exists(node_script):
+                        run_cmd = ["node", node_script, "-p", base_prompt]
                     else:
-                        # Generic CLI: try piping via stdin
-                        prompt_file = os.path.join(tempfile.gettempdir(), "cmdq_prompt.txt")
-                        with open(prompt_file, "w", encoding="utf-8") as pf:
-                            pf.write(current_prompt)
-                        print(f"DEBUG: Generic one-shot: type prompt | {cmd_to_run}")
-                        result = subprocess.run(
-                            f'type "{prompt_file}" | "{cmd_to_run}"',
-                            shell=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                            env=env
-                        )
-                        output = result.stdout.strip()
-                        error_output = result.stderr.strip() if result.stderr else ""
-                        try: os.remove(prompt_file)
-                        except: pass
-                    
-                    print(f"DEBUG: CLI stdout ({len(output)} chars): {output[:200]}...")
-                    if error_output:
-                        print(f"DEBUG: CLI stderr: {error_output[:200]}...")
-                except subprocess.TimeoutExpired:
-                    output = ""
-                    error_output = "CLI process timed out after 300 seconds."
-                    print(f"DEBUG: CLI TIMEOUT")
-                except Exception as cli_err:
-                    output = ""
-                    error_output = str(cli_err)
-                    print(f"DEBUG: CLI ERROR: {cli_err}")
-            
-            if not output and error_output:
-                if attempt == MAX_RETRIES - 1:
-                    return {"status": "error", "message": f"CLI/API Error on attempt {attempt}: {error_output}"}
+                        run_cmd = [cmd_to_run, "-p", base_prompt[:7000]]
+
+                    cli_result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=300, env=env)
+                    output = cli_result.stdout.strip()
                 else:
-                    import time
-                    time.sleep(1) # Small delay before retry
-                    continue
-                
-            if not output:
-                 output = "No valid text output returned from model or CLI."
-                 
-            # Extract SQL and execute it
-            sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
-            
-            if sql_match:
-                extracted_sql = sql_match.group(1).strip()
-                
-                # Safety check
-                upper_sql = extracted_sql.upper()
-                is_unsafe = any(kw in upper_sql for kw in ["DROP ", "ALTER ", "TRUNCATE "])
-                if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
-                    execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands (DROP, ALTER, TRUNCATE, or DELETE without WHERE) are not allowed to be executed automatically."}]
-                    break
-                    
-                # Protection enforcement
-                is_protected_breach = False
-                for p in payload.protected_items:
-                    p_bare = p.split('::')[-1] # extract the bare table/schema/db name
-                    # Very strict check: if the name is mentioned ANYWHERE in the SQL
-                    if p_bare.lower() in extracted_sql.lower():
-                        is_protected_breach = True
-                        break
-                        
-                if is_protected_breach:
-                    execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Cannot execute query. One or more targets are protected from AI operations."}]
-                    break
-                    
-                # Open direct session using the injected credentials
-                from sqlalchemy import create_engine
-                
-                # Split SQL into individual statements
-                raw_statements = [s.strip() for s in extracted_sql.split(';') if s.strip()]
-                parsed_statements = []
-                
-                for s in raw_statements:
-                    cleaned_lines = []
-                    local_switch = None
-                    for line in s.split("\n"):
-                        l_strip = line.strip()
-                        if l_strip.startswith("\\c ") or l_strip.startswith("\\connect "):
-                            # Capture the requested db switch explicitly!
-                            parts = l_strip.split()
-                            if len(parts) >= 2:
-                                local_switch = parts[1].strip(';"\'`')
-                        else:
-                            cleaned_lines.append(line)
-                            
-                    cleaned_stmt = "\n".join(cleaned_lines).strip()
-                    if cleaned_stmt or local_switch:
-                        parsed_statements.append({
-                            "stmt": cleaned_stmt,
-                            "switch_db": local_switch
-                        })
-                
-                current_db = cfg.database
-                if cfg.db_type == "postgres" and not current_db:
-                    current_db = "postgres"
-                    
-                try:
-                    # Check if script contains CREATE DATABASE or context switches
-                    requires_autocommit = False
-                    for item in parsed_statements:
-                        if re.search(r'CREATE\s+DATABASE', item["stmt"], re.IGNORECASE) or item["switch_db"]:
-                            requires_autocommit = True
-                            break
-                            
-                    if cfg.db_type == "postgres":
-                        base_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
-                    else:
-                        base_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
+                    prompt_file = os.path.join(tempfile.gettempdir(), "cmdq_prompt.txt")
+                    with open(prompt_file, "w", encoding="utf-8") as pf:
+                        pf.write(base_prompt)
+                    cli_result = subprocess.run(f'type "{prompt_file}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300, env=env)
+                    output = cli_result.stdout.strip()
+                    try: os.remove(prompt_file)
+                    except: pass
 
-                    current_db = cfg.database if cfg.database else "postgres"
-                    
-                    if not requires_autocommit:
-                        # Transactional execution for clean rollbacks upon failure
-                        engine = create_engine(base_url + current_db)
-                        with engine.begin() as conn:
-                            # Execute session context first
-                            if payload.session_context:
-                                for ctx_cmd in payload.session_context:
-                                    if ctx_cmd.strip():
-                                        conn.execute(text(ctx_cmd))
+                sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
+                if sql_match:
+                    extracted_sql = sql_match.group(1).strip()
+                    upper_sql = extracted_sql.upper()
+                    is_unsafe = any(kw in upper_sql for kw in ["DROP ", "ALTER ", "TRUNCATE "])
+                    if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
+                        execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."}]
+                    else:
+                        engine = create_engine(
+                            (f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/" if cfg.db_type == "postgres"
+                             else f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/") +
+                            (cfg.database if cfg.database else "postgres")
+                        )
+                        try:
+                            with engine.begin() as conn:
+                                rp = conn.execute(text(extracted_sql))
+                                if rp.returns_rows:
+                                    execution_results = [dict(zip(rp.keys(), row)) for row in rp.fetchall()]
+                        except Exception as sql_err:
+                            execution_results = [{"error": str(sql_err)}]
+            except subprocess.TimeoutExpired:
+                output = "CLI process timed out after 300 seconds."
+            except Exception as cli_err:
+                output = f"CLI Error: {str(cli_err)}"
 
-                            for item in parsed_statements:
-                                stmt = item["stmt"]
-                                if not stmt: continue
-                                result_proxy = conn.execute(text(stmt))
-                                if result_proxy.returns_rows:
-                                    rows = result_proxy.fetchall()
-                                    keys = result_proxy.keys()
-                                    execution_results = [dict(zip(keys, row)) for row in rows]
-                    else:
-                        # Fallback for meta commands that require autocommit
-                        for item in parsed_statements:
-                            stmt = item["stmt"]
-                            if item["switch_db"]:
-                                current_db = item["switch_db"]
-                            
-                            new_db_name = None
-                            db_match = re.search(r'CREATE\s+DATABASE\s+([a-zA-Z0-9_]+)', stmt, re.IGNORECASE)
-                            if db_match:
-                                new_db_name = db_match.group(1).replace('"', '').replace("'", "").replace('`', '').strip()
-                                
-                            engine = create_engine(base_url + current_db, isolation_level="AUTOCOMMIT")
-                            with engine.connect() as conn:
-                                if stmt:
-                                    result_proxy = conn.execute(text(stmt))
-                                    if result_proxy.returns_rows:
-                                        rows = result_proxy.fetchall()
-                                        keys = result_proxy.keys()
-                                        execution_results = [dict(zip(keys, row)) for row in rows]
-                            
-                            if new_db_name:
-                                current_db = new_db_name
-                                
-                    is_investigate = "-- INVESTIGATE" in extracted_sql.upper()
-                    if is_investigate and attempt < MAX_RETRIES - 1:
-                        investigate_feedback = (
-                            f"\n\nThe diagnostic query you generated:\n```sql\n{extracted_sql}\n```\n"
-                            f"Executed successfully and returned these results (truncated if large):\n{json.dumps(execution_results, default=str)[:10000]}\n\n"
-                            f"Now, based on these results, you MUST proceed to complete the user's original task: '{payload.prompt}'. "
-                            f"If you need one more investigation, you may, but the goal is to finish the task NOW."
-                        )
-                        current_prompt += investigate_feedback
-                        continue # Feedback loops back to AI
-                        
-                    break # Execution successful, exit loop
-                except Exception as sql_err:
-                    execution_results = [{"error": str(sql_err)}]
-                    
-                    if attempt < MAX_RETRIES - 1:
-                        # Feed the error back to the model
-                        error_feedback = (
-                            f"\n\nThe SQL query you generated:\n```sql\n{extracted_sql}\n```\n"
-                            f"Resulted in this error during execution:\n{str(sql_err)}\n\n"
-                            f"Please correct the query based on this error and output it again wrapped in a ```sql ... ``` block."
-                        )
-                        current_prompt += error_feedback
-                    else:
-                        break # Max retries reached
-            else:
-                if attempt > 0 and attempt < MAX_RETRIES - 1:
-                    current_prompt += f"\n\nYou did not wrap your output in a valid ```sql ... ``` block! You must wrap your query in ```sql ... ```. Please try again."
-                    continue
-                break # No SQL to execute, break loop
-                
         return {
-            "status": "success", 
-            "message": output, 
+            "status": "success",
+            "message": output,
             "extracted_sql": extracted_sql,
             "data": execution_results
         }
@@ -2087,42 +1773,117 @@ async def import_table(
 @app.post("/import/database")
 async def import_database(
     file: UploadFile = File(...),
-    db_config: str = Form(...)
+    db_config: str = Form(...),
+    target_database: str = Form("")
 ):
-    """Imports a database SQL dump natively using the app's connection."""
+    """Imports a SQL dump to restore a full database on the server.
+
+    The .sql file may contain CREATE DATABASE, CREATE TABLE, INSERT, etc.
+    This endpoint handles:
+    - Bootstrapping: connecting to default admin DB first if the target DB doesn't exist
+    - CREATE DATABASE / DROP DATABASE statements
+    - AUTOCOMMIT for DDL
+    - Transactional execution for DML
+    """
+    import re as re_mod
     try:
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
-        
-        session = get_db_connection(
-            db_type=cfg.db_type, host=cfg.host, port=cfg.port, 
-            user=cfg.user, password=cfg.password, dbname=cfg.database
-        )
-        
         content = await file.read()
         content_str = content.decode("utf-8")
-        
-        # Split by semicolon but ignore ones inside quotes
-        # This is a basic implementation suitable for our native dumps
-        import re
-        statements = re.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
-        
-        inserted = 0
-        with session.begin():
-            for stmt in statements:
-                stmt = stmt.strip()
-                if not stmt:
-                    continue
-                try:
-                    session.execute(text(stmt))
-                    inserted += 1
-                except Exception as stmt_err:
-                    logger.warning(f"Failed to execute statement: {stmt[:50]}... Error: {str(stmt_err)}")
-                    # Continue if it's a "table already exists" or similar for non-destructive imports
-                    continue
-                    
-        session.close()
-        return {"status": "success", "message": f"Database import completed. Executed {inserted} SQL statements."}
+
+        # 1. Scan for CREATE DATABASE and DROP DATABASE statements
+        create_db_match = re_mod.search(r'CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re_mod.IGNORECASE)
+        drop_db_match = re_mod.search(r'DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re_mod.IGNORECASE)
+        dump_db_name = create_db_match.group(2) if create_db_match else (drop_db_match.group(2) if drop_db_match else "")
+
+        # 2. Determine actual target database name
+        target_db = target_database or dump_db_name or cfg.database
+        if not target_db:
+            return {"status": "error", "message": "No target database specified. Provide a database name or include CREATE DATABASE in your SQL dump."}
+
+        # 3. Split SQL into statements (handle quoted semicolons, dollar quotes for PG functions)
+        raw_statements = re_mod.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
+
+        # 4. Separate DDL (needs autocommit) from DML (can be transactional)
+        ddl_statements = []
+        dml_statements = []
+        for raw_stmt in raw_statements:
+            stmt = raw_stmt.strip()
+            if not stmt:
+                continue
+            upper = stmt.upper()
+            if any(upper.startswith(kw) for kw in ["CREATE DATABASE", "DROP DATABASE", "CREATE TABLE", "DROP TABLE", "ALTER TABLE", "TRUNCATE", "CREATE INDEX", "DROP INDEX", "CREATE SEQUENCE", "DROP SEQUENCE", "CREATE SCHEMA", "DROP SCHEMA", "CREATE EXTENSION", "ALTER DATABASE", "ALTER SCHEMA", "SET ", "SELECT pg_catalog"]):
+                ddl_statements.append(stmt)
+            else:
+                dml_statements.append(stmt)
+
+        from sqlalchemy import create_engine
+        safe_user = urllib.parse.quote_plus(cfg.user)
+        safe_password = urllib.parse.quote_plus(cfg.password)
+
+        def make_url(db_name):
+            if cfg.db_type == "postgres":
+                return f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
+            return f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
+
+        # 5. Determine bootstrap database (default admin DB)
+        bootstrap_db = "postgres" if cfg.db_type == "postgres" else ""
+        import urllib.parse as url_parse_mod
+
+        # 6. Connect to bootstrap DB and execute DDL
+        total_executed = 0
+
+        # Handle DDL statements that require AUTOCOMMIT (CREATE DATABASE, etc.)
+        if ddl_statements:
+            ddl_engine = create_engine(make_url(bootstrap_db), isolation_level="AUTOCOMMIT")
+            with ddl_engine.connect() as conn:
+                for stmt in ddl_statements:
+                    try:
+                        conn.execute(text(stmt))
+                        total_executed += 1
+                    except Exception as stmt_err:
+                        err_msg = str(stmt_err).lower()
+                        # Ignore "already exists" and "duplicate" errors for idempotent imports
+                        if any(kw in err_msg for kw in ["already exists", "duplicate", "already been created"]):
+                            logger.info(f"Skipped (already exists): {stmt[:60]}...")
+                        else:
+                            logger.warning(f"DDL statement error: {stmt[:60]}... {str(stmt_err)}")
+
+            ddl_engine.dispose()
+
+        # 7. If CREATE DATABASE was in the dump and we executed it, reconnect to the new DB
+        current_db = target_db
+        if create_db_match:
+            current_db = create_db_match.group(2)
+
+        # 8. Execute DML (INSERT, UPDATE, etc.) in a transaction
+        if dml_statements:
+            try:
+                dml_engine = create_engine(make_url(current_db))
+                with dml_engine.begin() as conn:
+                    for stmt in dml_statements:
+                        try:
+                            conn.execute(text(stmt))
+                            total_executed += 1
+                        except Exception as stmt_err:
+                            logger.warning(f"DML statement error: {stmt[:60]}... {str(stmt_err)}")
+                dml_engine.dispose()
+            except Exception as conn_err:
+                # If we can't connect to the new DB, the CREATE DATABASE might have failed silently
+                # Try connecting back to the bootstrap DB and executing DML there
+                logger.warning(f"Could not connect to '{current_db}', falling back to bootstrap DB: {str(conn_err)}")
+                fallback_engine = create_engine(make_url(bootstrap_db))
+                with fallback_engine.begin() as conn:
+                    for stmt in dml_statements:
+                        try:
+                            conn.execute(text(stmt))
+                            total_executed += 1
+                        except Exception as stmt_err:
+                            logger.warning(f"DML (fallback) error: {stmt[:60]}... {str(stmt_err)}")
+                fallback_engine.dispose()
+
+        return {"status": "success", "message": f"Database import completed. Executed {total_executed} SQL statements in database '{current_db}'."}
     except Exception as e:
         logger.exception(f"Database Import Failed: {str(e)}")
         return {"status": "error", "message": f"Database Import Failed: {str(e)}"}

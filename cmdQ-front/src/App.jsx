@@ -42,6 +42,8 @@ const CopyIcon = ({ className }) => (
 
 function App() {
   const [prompt, setPrompt] = useState("");
+  const [attachedFile, setAttachedFile] = useState(null);
+  const fileInputRef = useRef(null);
   const [sqlResult, setSqlResult] = useState(null);
   const [sqlQuery, setSqlQuery] = useState("");
 
@@ -74,14 +76,31 @@ function App() {
   const activeConfig = useMemo(() => activeConn ? { ...activeConn.config, database: activeDatabase || "" } : null, [activeConn, activeDatabase]);
   const activeSchema = useMemo(() => activeConn && activeDatabase && activeConn.schemas ? activeConn.schemas[activeDatabase] : null, [activeConn, activeDatabase]);
 
+  const tableList = useMemo(() => {
+    if (!activeSchema) return [];
+    const list = [];
+    for (const [sName, tables] of Object.entries(activeSchema)) {
+      for (const tName of Object.keys(tables)) {
+        list.push(`${sName}.${tName}`);
+      }
+    }
+    return list.sort();
+  }, [activeSchema]);
+
   // AI CLI State
   const [availableClis, setAvailableClis] = useState([]);
   const [selectedCli, setSelectedCli] = useState("");
   const [customCliCommand, setCustomCliCommand] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
+  const [selectedTable, setSelectedTable] = useState("");
+  const [selectedAction, setSelectedAction] = useState("");
+  const [showTableMention, setShowTableMention] = useState(false);
+  const [tableMentionFilter, setTableMentionFilter] = useState("");
 
   // API Model Registration State
   const [showApiModal, setShowApiModal] = useState(false);
+  const [registeredModels, setRegisteredModels] = useState([]);
+  const [editingModel, setEditingModel] = useState(null);
 
   // Persistence State
   const [savedQueries, setSavedQueries] = useState([]);
@@ -293,6 +312,7 @@ function App() {
 
     const checkBackend = () => {
       fetchClis(); // This also checks connectivity implicitly
+      fetchRegisteredModels();
       apiService.fetchClis()
         .then(() => setBackendStatus('connected'))
         .catch(() => setBackendStatus('error'));
@@ -595,11 +615,46 @@ function App() {
     }
   };
 
+  const handleFileAttach = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const name = file.name;
+      const ext = name.split('.').pop().toLowerCase();
+
+      if (ext === 'csv' || ext === 'json' || ext === 'txt') {
+        const text = await file.text();
+        setAttachedFile({ name, content: text, type: ext });
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const allData = [];
+        wb.SheetNames.forEach(sheetName => {
+          const ws = wb.Sheets[sheetName];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          if (json.length > 0) {
+            allData.push(`--- Sheet: ${sheetName} ---`);
+            allData.push(JSON.stringify(json, null, 2));
+          }
+        });
+        setAttachedFile({ name, content: allData.join('\n'), type: 'excel' });
+      } else {
+        setAttachedFile({ name, content: `[Unsupported file type: .${ext}]`, type: ext });
+      }
+    } catch (err) {
+      console.error("File attach error:", err);
+      alert("Failed to read file: " + err.message);
+    }
+    e.target.value = "";
+  };
+
   const extractTableFromQuery = (query) => {
     if (!query) return null;
-    const match = query.match(/from\s+([`"]?[a-zA-Z0-9_]+[`"]?(?:\.[`"]?[a-zA-Z0-9_]+[`"]?)?)/i);
+    const cleaned = query.replace(/^--.*$/gm, '').trim();
+    const match = cleaned.match(/\bfrom\s+([`"\[]?[a-zA-Z0-9_]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_]+[`"\]]?)?)/i);
     if (match) {
-      const full = match[1].replace(/[`"]/g, '');
+      const full = match[1].replace(/[`"\[\]]/g, '');
       const parts = full.split('.');
       if (parts.length === 2) {
         return { schema: parts[0], table: parts[1] };
@@ -626,6 +681,11 @@ function App() {
       if (data.status === "error") {
         setSqlResult({ error: data.message || "Query Failed" });
         return;
+      }
+
+      if (isSelect && extracted) {
+        setActiveSchemaName(extracted.schema);
+        setActiveTableName(extracted.table);
       }
 
       setSqlResult({
@@ -726,6 +786,46 @@ function App() {
     }
   };
 
+  const handlePromptChange = (e) => {
+    const newValue = e.target.value;
+    setPrompt(newValue);
+    const atIndex = newValue.lastIndexOf('@');
+    if (atIndex === -1 || (atIndex > 0 && newValue[atIndex - 1] !== ' ' && newValue[atIndex - 1] !== '\t' && newValue[atIndex - 1] !== '(')) {
+      setShowTableMention(false);
+      if (atIndex === -1 && !newValue.includes('@')) {
+        setSelectedTable("");
+        setSelectedAction("");
+      }
+      return;
+    }
+    const afterAt = newValue.slice(atIndex + 1);
+    const spaceIndex = afterAt.search(/[\s,;)]/);
+    const filterText = spaceIndex === -1 ? afterAt : afterAt.slice(0, spaceIndex);
+    setTableMentionFilter(filterText);
+    setShowTableMention(true);
+  };
+
+  const handleTableMentionSelect = (tableName) => {
+    const atIndex = prompt.lastIndexOf('@');
+    const beforeAt = prompt.slice(0, atIndex);
+    const afterMention = prompt.slice(atIndex + 1);
+    const endIndex = afterMention.search(/[\s,;)]/);
+    const rest = endIndex === -1 ? '' : afterMention.slice(endIndex);
+    setPrompt(beforeAt + '@' + tableName + rest + ' ');
+    setSelectedTable(tableName);
+    setShowTableMention(false);
+  };
+
+  const handleActionSelect = (action) => {
+    setSelectedAction(prev => prev === action ? "" : action);
+  };
+
+  const filteredTableMentions = useMemo(() => {
+    if (!tableMentionFilter) return tableList;
+    const lower = tableMentionFilter.toLowerCase();
+    return tableList.filter(t => t.toLowerCase().includes(lower));
+  }, [tableList, tableMentionFilter]);
+
   const handleDebugLaunch = async () => {
     console.log("DEBUG: handleDebugLaunch called. selectedCli:", selectedCli, "customCliCommand:", customCliCommand);
     try {
@@ -767,20 +867,40 @@ function App() {
         command: command,
         prompt: prompt,
         db_config: activeConfig,
-        schema_data: activeSchema || {},
         chat_history: chatHistory,
         protected_items: protectedItems,
-        session_context: sessionContext
+        session_context: sessionContext,
+        attached_file: attachedFile || undefined,
+        selected_table: selectedTable,
+        action: selectedAction
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
+      setAttachedFile(null);
 
       if (data.extracted_sql) {
         const extracted = extractTableFromQuery(data.extracted_sql);
-        const isSelect = data.extracted_sql.toLowerCase().trim().startsWith('select');
+        const isSelect = /^\s*(?:--.*\n\s*)*select\b/i.test(data.extracted_sql);
         data.isTableClick = false;
         data.targetSchema = (isSelect && extracted) ? extracted.schema : null;
         data.targetTable = (isSelect && extracted) ? extracted.table : null;
+
+        if (isSelect && extracted) {
+          setActiveSchemaName(extracted.schema);
+          setActiveTableName(extracted.table);
+
+          const tableInfo = activeSchema?.[extracted.schema]?.[extracted.table];
+          if (tableInfo?.constraints) {
+            data.constraints = tableInfo.constraints;
+          }
+          if (tableInfo?.columns) {
+            data.columns = tableInfo.columns;
+          }
+        }
+      }
+
+      if (data.data && !data.original_data) {
+        data.original_data = JSON.parse(JSON.stringify(data.data));
       }
 
       setSqlResult(data);
@@ -805,8 +925,40 @@ function App() {
 
   const handleApiRegistered = (newId) => {
     setShowApiModal(false);
+    setEditingModel(null);
     fetchClis();
+    fetchRegisteredModels();
     setSelectedCli(newId);
+  };
+
+  const fetchRegisteredModels = () => {
+    apiService.fetchRegisteredModels()
+      .then(data => {
+        if (data.status === "success") {
+          setRegisteredModels(data.models);
+        }
+      })
+      .catch(err => console.error("Failed to fetch registered models:", err));
+  };
+
+  const handleEditModel = (model) => {
+    setEditingModel(model);
+    setShowApiModal(true);
+  };
+
+  const handleDeleteModel = (modelId, modelName) => {
+    if (!window.confirm(`Delete API model "${modelName}"? This cannot be undone.`)) return;
+    apiService.deleteApiModel(modelId)
+      .then(data => {
+        if (data.status === "success") {
+          fetchClis();
+          fetchRegisteredModels();
+          if (selectedCli === modelId) {
+            setSelectedCli("");
+          }
+        }
+      })
+      .catch(err => alert("Delete Error: " + err.message));
   };
 
   const launchAiAnalysis = async (type) => {
@@ -915,6 +1067,11 @@ function App() {
     if (entity.type === 'server') {
       const server = entity.server;
       switch (action) {
+        case 'import':
+          setActiveConnectionId(server.id);
+          setActiveDatabase(server.databases?.[0] || "");
+          setShowImportDbModal(true);
+          break;
         case 'rename':
         case 'properties':
         case 'backup':
@@ -1034,7 +1191,7 @@ function App() {
       )}
 
       {showApiModal && (
-        <ApiRegistrationForm onCancel={() => setShowApiModal(false)} onRegistered={handleApiRegistered} />
+        <ApiRegistrationForm onCancel={() => { setShowApiModal(false); setEditingModel(null); }} onRegistered={handleApiRegistered} editModel={editingModel} />
       )}
 
 
@@ -1052,7 +1209,7 @@ function App() {
         )}
 
         {/* Sidebar Header with Toggle */}
-        <div className={`h-12 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
+        <div className={`h-9 border-b border-border flex items-center px-4 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
           {!sidebarCollapsed && <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Explorer</span>}
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -1064,10 +1221,10 @@ function App() {
         </div>
 
         {sidebarCollapsed ? (
-          <div className="flex-1 flex flex-col items-center py-4 gap-4 overflow-y-auto no-scrollbar">
+          <div className="flex-1 flex flex-col items-center py-2 gap-2 overflow-y-auto no-scrollbar">
             <button
               onClick={() => setShowConnectionForm(true)}
-              className="w-10 h-10 flex items-center justify-center rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-background transition-all cursor-pointer flex-shrink-0"
+              className="w-10 h-8.5 flex items-center justify-center rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-background transition-all cursor-pointer flex-shrink-0"
               title="Add Server"
             >
               <span className="text-xl">+</span>
@@ -1426,6 +1583,30 @@ function App() {
                     </button>
                   </div>
                 )}
+                {/* // Registred API keys */}
+                {registeredModels.length > 0 && (
+                  <div className="flex items-center gap-1 ml-2 flex-wrap">
+                    {registeredModels.map(model => (
+                      <div key={model.id} className="flex items-center gap-1 bg-purple-500/10 border border-purple-500/30 rounded px-2 py-0.5 text-[10px]">
+                        <span className="text-purple-300 truncate max-w-[80px]" title={model.name}>{model.name}</span>
+                        <button
+                          onClick={() => handleEditModel(model)}
+                          className="text-purple-400 hover:text-white px-0.5"
+                          title="Edit"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => handleDeleteModel(model.id, model.name)}
+                          className="text-red-400 hover:text-white px-0.5"
+                          title="Delete"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1454,26 +1635,91 @@ function App() {
               ))}
             </ScrollArea>
 
-            <div className="flex items-center border-t border-border pt-2 flex-shrink-0 relative">
-              {/* <div className="absolute -top-6 left-0 flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${backendStatus === 'connected' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`}></div>
-                <span className="text-[10px] uppercase font-bold tracking-tighter text-gray-500">
-                  Backend: {backendStatus === 'connected' ? 'Online' : 'Disconnected'} 
-                  {activeDatabase && ` | DB: ${activeDatabase}`}
-                </span>
+            <div className="flex flex-col border-t border-border pt-2 flex-shrink-0 relative">
+              {attachedFile && (
+                <div className="flex items-center gap-2 px-1 pb-1.5 text-[11px]">
+                  <span className="text-primary">📎 {attachedFile.name}</span>
+                  <span className="text-gray-500">({attachedFile.type})</span>
+                  <button
+                    onClick={() => setAttachedFile(null)}
+                    className="text-red-400 hover:text-red-300 ml-auto cursor-pointer"
+                    title="Remove file"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {showTableMention && filteredTableMentions.length > 0 && (
+                <div className="absolute bottom-full left-0 right-0 mb-1 mx-1 max-h-40 overflow-y-auto bg-panel border border-border rounded shadow-lg z-50">
+                  {filteredTableMentions.map(t => (
+                    <div
+                      key={t}
+                      onClick={() => handleTableMentionSelect(t)}
+                      className="px-3 py-1.5 text-xs text-textPrimary hover:bg-primary/20 cursor-pointer font-code truncate"
+                    >
+                      {t}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedTable && (
+                <div className="flex items-center gap-1.5 px-1 pb-1.5 flex-wrap">
+                  <span className="text-[11px] text-primary font-bold mr-1">@{selectedTable}</span>
+                  {["seed", "edit", "delete", "insert", "select", "describe"].map(a => (
+                    <button
+                      key={a}
+                      onClick={() => handleActionSelect(a)}
+                      className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all cursor-pointer ${
+                        selectedAction === a
+                          ? "bg-primary text-background"
+                          : "bg-white/5 text-gray-400 hover:text-textPrimary hover:bg-white/10"
+                      }`}
+                    >
+                      {a}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => { setSelectedTable(""); setSelectedAction(""); }}
+                    className="text-[10px] text-red-400 hover:text-red-300 ml-auto cursor-pointer px-1"
+                    title="Clear table selection"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.json,.txt,.xlsx,.xls"
+                  onChange={handleFileAttach}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!activeConfig}
+                  className="text-gray-400 hover:text-primary transition-colors cursor-pointer disabled:opacity-50 shrink-0 p-1"
+                  title="Attach file (CSV, JSON, Excel)"
+                >
+                  📎
+                </button>
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    value={prompt}
+                    onChange={handlePromptChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') launchCli();
+                    }}
+                    disabled={!activeConfig}
+                    placeholder={activeConfig ? "type your command here... (e.g. 'Seed @public.users with 50 rows') and press Enter" : "Connect to a database first..."}
+                    className="w-full bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
+                  />
+                </div>
               </div>
-              <span className="text-primary font-bold mr-2">&gt;</span> */}
-              <input
-                type="text"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') launchCli();
-                }}
-                disabled={!activeConfig}
-                placeholder={activeConfig ? "type your command here... (e.g. 'Seed users table with 50 rows') and press Enter" : "Connect to a database first..."}
-                className="flex-1 bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"
-              />
             </div>
           </div>
         )}
@@ -1691,7 +1937,10 @@ function App() {
           targetName={activeDatabase}
           activeConfig={activeConfig}
           onCancel={() => setShowImportDbModal(false)}
-          onSuccess={() => handleDbChange(activeConnectionId, activeDatabase)}
+          onSuccess={() => {
+            setShowImportDbModal(false);
+            if (activeConnectionId) handleRefreshConnection(activeConnectionId);
+          }}
         />
       )}
 
