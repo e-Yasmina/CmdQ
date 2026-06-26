@@ -1,28 +1,43 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const net = require('net');
 const { spawn, execSync } = require('child_process');
 
-function killPort(port) {
+const BACKEND_PORT = 8000;
+const FRONTEND_PORT = 5173;
+const FRONTEND_URL = `http://localhost:${FRONTEND_PORT}`;
+const isDev = !app.isPackaged;
+
+function isTcpPortOpen(port, host = '127.0.0.1') {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(500);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+}
+
+function getPidOnPort(port) {
   try {
     const stdout = execSync(`netstat -ano | findstr :${port}`).toString();
-    const lines = stdout.split('\n');
-    lines.forEach(line => {
+    for (const line of stdout.split('\n')) {
       const parts = line.trim().split(/\s+/);
       if (parts.length > 4 && parts[1].includes(`:${port}`)) {
-        const pid = parts[parts.length - 1];
-        if (pid && pid !== '0' && pid !== process.pid.toString()) {
-          console.log(`Cleaning up old process on port ${port} (PID: ${pid})...`);
-          try {
-            execSync(`taskkill /F /PID ${pid} /T`);
-          } catch (e) {
-            // Likely already gone
-          }
-        }
+        return parts[parts.length - 1];
       }
-    });
-  } catch (e) {
-    // Port likely already free
-  }
+    }
+  } catch (e) {}
+  return null;
 }
 
 let mainWindow;
@@ -39,25 +54,24 @@ function createWindow() {
       contextIsolation: true,
     },
     title: "CmdQ Desktop",
-    backgroundColor: '#0f172a', // Matching current theme
+    backgroundColor: '#0f172a',
     autoHideMenuBar: true
   });
-  
-  // also setting menu to null to free up space entirely
+
   mainWindow.setMenu(null);
 
-  // In development, load the Vite dev server
-  // In production, we'd load the build/index.html
-  const url = 'http://localhost:5173';
-
-  const loadWithRetry = () => {
-    mainWindow.loadURL(url).catch(() => {
-      console.log("Vite not ready yet, retrying in 1s...");
-      setTimeout(loadWithRetry, 1000);
-    });
-  };
-
-  loadWithRetry();
+  if (isDev) {
+    const loadWithRetry = () => {
+      if (!mainWindow) return;
+      mainWindow.loadURL(FRONTEND_URL).catch(() => {
+        console.log("Vite not ready yet, retrying in 1s...");
+        setTimeout(loadWithRetry, 1000);
+      });
+    };
+    loadWithRetry();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'cmdQ-front', 'dist', 'index.html'));
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -66,9 +80,7 @@ function createWindow() {
 
 function startBackend() {
   console.log("Starting Python backend...");
-  // Assuming python is in the path and main.py is in python-backend folder
-  // We use uvicorn to run the FastAPI app
-  backendProcess = spawn('python', ['-u', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000'], {
+  backendProcess = spawn('python', ['-u', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
     cwd: path.join(__dirname, 'python-backend'),
     shell: true
   });
@@ -98,18 +110,31 @@ function startFrontend() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   ipcMain.on('open-new-window', () => {
     createWindow();
   });
 
-  // Self-heal: kill anything on our ports before starting
-  console.log("Pre-flight system check: Clearing ports...");
-  killPort(8000); // Backend
-  killPort(5173); // Frontend (Vite)
+  if (await isTcpPortOpen(BACKEND_PORT)) {
+    console.log(`Backend port ${BACKEND_PORT} is already in use; reusing existing local service.`);
+  } else {
+    startBackend();
+  }
 
-  startBackend();
-  startFrontend();
+  if (isDev) {
+    if (await isTcpPortOpen(FRONTEND_PORT)) {
+      console.log(`Frontend port ${FRONTEND_PORT} is already in use; reusing existing local service.`);
+    } else {
+      const pid = getPidOnPort(FRONTEND_PORT);
+      if (pid) {
+        console.log(`Port ${FRONTEND_PORT} is reserved (PID ${pid}), freeing it...`);
+        try { execSync(`taskkill /F /PID ${pid} /T`); } catch (e) {}
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      startFrontend();
+    }
+  }
+
   createWindow();
 
   app.on('activate', () => {

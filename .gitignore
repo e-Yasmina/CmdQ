@@ -17,6 +17,7 @@ build/
 .env.test.local
 .env.production.local
 .env.local
+.test_tmp/
 
 # === Python / Backend ===
 __pycache__/
