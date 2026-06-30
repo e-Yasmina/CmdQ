@@ -4,6 +4,18 @@ import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
 
+const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_$]{0,127}$/;
+
+function checkIdentifier(name, label) {
+    if (!name || typeof name !== 'string') {
+        throw new Error(`Invalid ${label}: must be a non-empty string`);
+    }
+    if (!IDENTIFIER_RE.test(name)) {
+        throw new Error(`Invalid ${label} '${name}': contains unsafe characters`);
+    }
+    return name;
+}
+
 export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh, onLocalMutation, onDiagnose }) {
     const [editingCell, setEditingCell] = useState(null); // { rowIndex, key, value }
     const [addingRow, setAddingRow] = useState(null);
@@ -64,7 +76,10 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         try {
             setIsMutating(true);
             setMutationError("");
-            
+
+            const safeSchema = checkIdentifier(refSchema, "schema name");
+            const safeTable = checkIdentifier(refTable, "table name");
+
             const origRow = result.original_data ? result.original_data[rowIndex] : rowSelected;
             
             let realUpdateKey = updateKey;
@@ -77,11 +92,13 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 }
             }
 
+            const safeUpdateKey = checkIdentifier(realUpdateKey, "column name");
+
             const whereClause = Object.entries(origRow)
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `UPDATE "${refSchema}"."${refTable}" SET "${realUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
+            const query = `UPDATE "${safeSchema}"."${safeTable}" SET "${safeUpdateKey}" = ${formatSqlValue(updateValue)} WHERE ${whereClause}`;
 
             const response = await apiService.executeQuery({
                 query,
@@ -111,14 +128,17 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         try {
             setIsMutating(true);
             setMutationError("");
-            
+
+            const safeSchema = checkIdentifier(refSchema, "schema name");
+            const safeTable = checkIdentifier(refTable, "table name");
+
             const origRow = result.original_data && typeof rowIndex === 'number' ? result.original_data[rowIndex] : row;
             
             const whereClause = Object.entries(origRow)
                 .map(([k, v]) => v === null ? `"${k}" IS NULL` : `"${k}" = ${formatSqlValue(v)}`)
                 .join(' AND ');
 
-            const query = `DELETE FROM "${refSchema}"."${refTable}" WHERE ${whereClause}`;
+            const query = `DELETE FROM "${safeSchema}"."${safeTable}" WHERE ${whereClause}`;
 
             const response = await apiService.executeQuery({
                 query,
@@ -145,6 +165,10 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         try {
             setIsMutating(true);
             setMutationError("");
+
+            const safeSchema = checkIdentifier(refSchema, "schema name");
+            const safeTable = checkIdentifier(refTable, "table name");
+
             const origCols = result.original_data && result.original_data.length > 0 
                 ? Object.keys(result.original_data[0]) 
                 : null;
@@ -157,6 +181,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 const k = rowKeys[i];
                 if (addingRow[k] !== "") {
                     const realKey = origCols && origCols[i] ? origCols[i] : k;
+                    checkIdentifier(realKey, "column name");
                     validColNamesList.push(`"${realKey}"`);
                     validValuesList.push(formatSqlValue(addingRow[k]));
                 }
@@ -171,7 +196,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             const validColNames = validColNamesList.join(', ');
             const validValues = validValuesList.join(', ');
 
-            const query = `INSERT INTO "${refSchema}"."${refTable}" (${validColNames}) VALUES (${validValues})`;
+            const query = `INSERT INTO "${safeSchema}"."${safeTable}" (${validColNames}) VALUES (${validValues})`;
 
             await apiService.executeQuery({
                 query,

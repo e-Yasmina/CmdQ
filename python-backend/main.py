@@ -42,6 +42,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import re
+
+IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_$]{0,127}$')
+
+def validate_identifier(name: str, label: str = "identifier"):
+    if not name or not isinstance(name, str):
+        raise ValueError(f"Invalid {label}: must be a non-empty string")
+    if not IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid {label} '{name}': must start with a letter or underscore, contain only letters, digits, underscores, or $, max 128 chars")
+    return name
+
 class ConnectionDetails(BaseModel):
     db_type: str
     host: str
@@ -198,17 +210,19 @@ async def create_database(req: CreateDatabaseRequest):
         cfg = req.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
         safe_password = urllib.parse.quote_plus(cfg.password)
+
+        db_name = validate_identifier(req.new_db_name, "database name")
         
         if cfg.db_type == "postgres":
             connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/postgres"
             engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
             with engine.connect() as conn:
-                conn.execute(text(f'CREATE DATABASE "{req.new_db_name}"'))
+                conn.execute(text(f'CREATE DATABASE "{db_name}"'))
         else:
             connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
             engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
             with engine.connect() as conn:
-                conn.execute(text(f'CREATE DATABASE `{req.new_db_name}`'))
+                conn.execute(text(f'CREATE DATABASE `{db_name}`'))
                 
         return {"status": "success", "message": f"Database '{req.new_db_name}' created successfully."}
     except Exception as e:
@@ -227,8 +241,10 @@ async def drop_database(req: DropDatabaseRequest):
         cfg = req.db_config
         safe_user = urllib.parse.quote_plus(cfg.user)
         safe_password = urllib.parse.quote_plus(cfg.password)
+
+        db_name = validate_identifier(req.db_name, "database name")
         
-        if req.db_name.lower() in ["postgres", "sys", "information_schema", "mysql", "performance_schema"]:
+        if db_name.lower() in ["postgres", "sys", "information_schema", "mysql", "performance_schema"]:
             raise ValueError("Cannot drop critical system databases.")
             
         if cfg.db_type == "postgres":
@@ -236,13 +252,13 @@ async def drop_database(req: DropDatabaseRequest):
             engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
             with engine.connect() as conn:
                 # Terminate active connections before dropping exactly like pgAdmin
-                conn.execute(text(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{req.db_name}' AND pid <> pg_backend_pid()"))
-                conn.execute(text(f'DROP DATABASE "{req.db_name}"'))
+                conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :dbname AND pid <> pg_backend_pid()"), {"dbname": db_name})
+                conn.execute(text(f'DROP DATABASE "{db_name}"'))
         else:
             connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
             engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
             with engine.connect() as conn:
-                conn.execute(text(f'DROP DATABASE `{req.db_name}`'))
+                conn.execute(text(f'DROP DATABASE `{db_name}`'))
                 
         return {"status": "success", "message": f"Database '{req.db_name}' dropped successfully."}
     except Exception as e:
@@ -398,6 +414,9 @@ async def execute_query(req: QueryRequest):
 async def get_table_data(req: TableDataRequest):
     """Fetches paginated data for a specific table."""
     try:
+        schema_name = validate_identifier(req.schema_name, "schema name")
+        table_name = validate_identifier(req.table_name, "table name")
+
         session = get_db_connection(
             db_type=req.db_config.db_type,
             host=req.db_config.host,
@@ -408,9 +427,9 @@ async def get_table_data(req: TableDataRequest):
         )
         
         if req.db_config.db_type == "postgres":
-            query = f'SELECT * FROM "{req.schema_name}"."{req.table_name}" LIMIT :limit OFFSET :offset'
+            query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT :limit OFFSET :offset'
         else:
-            query = f"SELECT * FROM `{req.schema_name}`.`{req.table_name}` LIMIT :limit OFFSET :offset"
+            query = f"SELECT * FROM `{schema_name}`.`{table_name}` LIMIT :limit OFFSET :offset"
 
         # Execution results
         execution_results = []
@@ -898,17 +917,19 @@ async def analyze_data(req: DataAnalysisRequest):
     
     try:
         if req.table_name:
+            table_name = validate_identifier(req.table_name, "table name")
+            
             if cfg.db_type == "postgres":
-                schema_name = req.schema_name or "public"
+                schema_name = validate_identifier(req.schema_name or "public", "schema name")
                 
                 # Column check
                 cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"
-                cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
+                cols_res = session.execute(text(cols_q), {"t": table_name}).fetchall()
                 metrics["total_columns"] = len(cols_res)
                 
                 # Approximate rows
                 act_q = "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
-                act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
+                act_res = session.execute(text(act_q), {"s": schema_name, "t": table_name}).fetchone()
                 total_rows = act_res[0] if act_res and act_res[0] is not None else 0
                 metrics["total_rows"] = total_rows
                 
@@ -920,7 +941,7 @@ async def analyze_data(req: DataAnalysisRequest):
                     for col, dtype in sampled_columns:
                         try:
                             # Safely count non-nulls and distincts for sampling
-                            c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema_name}"."{req.table_name}"'
+                            c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema_name}"."{table_name}"'
                             c_res = session.execute(text(c_q)).fetchone()
                             if c_res:
                                 non_nulls = c_res[0]
@@ -937,12 +958,12 @@ async def analyze_data(req: DataAnalysisRequest):
             else: # MySQL
                 # Approx rows
                 size_q = "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
-                size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
+                size_res = session.execute(text(size_q), {"t": table_name}).fetchone()
                 total_rows = size_res[0] if size_res and size_res[0] is not None else 0
                 metrics["total_rows"] = total_rows
 
                 cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE();"
-                cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
+                cols_res = session.execute(text(cols_q), {"t": table_name}).fetchall()
                 metrics["total_columns"] = len(cols_res)
                 
                 sampled_columns = cols_res[:10]
@@ -951,7 +972,7 @@ async def analyze_data(req: DataAnalysisRequest):
                 if total_rows > 0:
                     for col, dtype in sampled_columns:
                         try:
-                            c_q = f"SELECT count(`{col}`) as non_nulls, count(distinct `{col}`) as unique_vals FROM `{req.table_name}`"
+                            c_q = f"SELECT count(`{col}`) as non_nulls, count(distinct `{col}`) as unique_vals FROM `{table_name}`"
                             c_res = session.execute(text(c_q)).fetchone()
                             if c_res:
                                 non_nulls = c_res[0]
@@ -1620,6 +1641,9 @@ def generate_native_sql_dump(cfg, temp_path):
 @app.post("/export/table")
 async def export_table(req: ExportTableRequest):
     try:
+        schema_name = validate_identifier(req.schema_name, "schema name")
+        table_name = validate_identifier(req.table_name, "table name")
+
         session = get_db_connection(
             db_type=req.db_config.db_type,
             host=req.db_config.host,
@@ -1630,9 +1654,9 @@ async def export_table(req: ExportTableRequest):
         )
         
         if req.db_config.db_type == "postgres":
-            query = f'SELECT * FROM "{req.schema_name}"."{req.table_name}"'
+            query = f'SELECT * FROM "{schema_name}"."{table_name}"'
         else:
-            query = f"SELECT * FROM `{req.schema_name}`.`{req.table_name}`"
+            query = f"SELECT * FROM `{schema_name}`.`{table_name}`"
             
         result_proxy = session.execute(text(query))
         rows = result_proxy.fetchall()
@@ -1780,6 +1804,9 @@ async def import_table(
     format: str = Form(...)
 ):
     try:
+        safe_schema = validate_identifier(schema_name, "schema name")
+        safe_table = validate_identifier(table_name, "table name")
+
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
         
@@ -1788,18 +1815,26 @@ async def import_table(
             user=cfg.user, password=cfg.password, dbname=cfg.database
         )
         
-        content = await file.read()
-        content_str = content.decode("utf-8")
-        
         inserted = 0
         if format == "csv":
             reader = csv.DictReader(io.StringIO(content_str))
             for row in reader:
-                cols = list(row.keys())
+                cols = [validate_identifier(k, "column name") for k in row.keys()]
                 col_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in cols])
                 val_plh = ", ".join([f":{k}" for k in cols])
                 
-                tbl_path = f'"{schema_name}"."{table_name}"' if cfg.db_type == 'postgres' else f"`{schema_name}`.`{table_name}`"
+                tbl_path = f'"{safe_schema}"."{safe_table}"' if cfg.db_type == 'postgres' else f"`{safe_schema}`.`{safe_table}`"
+                q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
+                session.execute(text(q), dict(row))
+                inserted += 1
+
+        elif format == "json":
+            data_arr = json.loads(content_str)
+            for row in data_arr:
+                cols = [validate_identifier(k, "column name") for k in row.keys()]
+                val_plh = ", ".join([f":{k}" for k in cols])
+                col_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in cols])
+                tbl_path = f'"{safe_schema}"."{safe_table}"' if cfg.db_type == 'postgres' else f"`{safe_schema}`.`{safe_table}`"
                 q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
                 session.execute(text(q), dict(row))
                 inserted += 1
@@ -1951,14 +1986,19 @@ async def import_database(
 async def etl_migrate(req: DataMigrationRequest):
     """Extracts, transforms, and loads data mapping seamlessly between databases."""
     try:
+        src_schema_name = validate_identifier(req.source_schema or "public", "source schema name") if req.source_schema else ""
+        src_table_name = validate_identifier(req.source_table, "source table name")
+        tgt_schema_name = validate_identifier(req.target_schema or "public", "target schema name") if req.target_schema else ""
+        tgt_table_name = validate_identifier(req.target_table, "target table name")
+
         # Extract
         src_session = get_db_connection(
             db_type=req.source_config.db_type, host=req.source_config.host, port=req.source_config.port,
             user=req.source_config.user, password=req.source_config.password, dbname=req.source_config.database
         )
         
-        src_schema = req.source_schema or "public" if req.source_config.db_type == "postgres" else req.source_schema
-        src_tbl = f'"{src_schema}"."{req.source_table}"' if req.source_config.db_type == 'postgres' else f"`{src_schema}`.`{req.source_table}`"
+        src_schema = src_schema_name if src_schema_name else ("public" if req.source_config.db_type == "postgres" else req.source_schema or "")
+        src_tbl = f'"{src_schema}"."{src_table_name}"' if req.source_config.db_type == 'postgres' else f"`{src_schema}`.`{src_table_name}`"
         
         src_query = f"SELECT * FROM {src_tbl}"
         src_res = src_session.execute(text(src_query))
@@ -2021,10 +2061,10 @@ async def etl_migrate(req: DataMigrationRequest):
         )
         
         tgt_schema = req.target_schema or "public" if req.target_config.db_type == "postgres" else req.target_schema
-        tgt_tbl = f'"{tgt_schema}"."{req.target_table}"' if req.target_config.db_type == 'postgres' else f"`{tgt_schema}`.`{req.target_table}`"
+        tgt_tbl = f'"{tgt_schema}"."{tgt_table_name}"' if req.target_config.db_type == 'postgres' else f"`{tgt_schema}`.`{tgt_table_name}`"
         
         inserted = 0
-        tgt_cols = list(transformed_data[0].keys())
+        tgt_cols = [validate_identifier(k, "target column name") for k in transformed_data[0].keys()]
         col_str = ", ".join([f'"{k}"' if req.target_config.db_type == 'postgres' else f"`{k}`" for k in tgt_cols])
         val_plh = ", ".join([f":{k}" for k in tgt_cols])
         ins_q = f"INSERT INTO {tgt_tbl} ({col_str}) VALUES ({val_plh})"
