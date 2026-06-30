@@ -48,10 +48,12 @@ def create_sql_agent(
                         conn.execute(text(ctx_cmd))
                 result = conn.execute(text(query))
                 if result.returns_rows:
-                    rows = result.fetchall()
+                    rows = result.fetchmany(5000)
                     keys = list(result.keys())
                     return json.dumps([dict(zip(keys, row)) for row in rows], default=str)
                 return "Query executed successfully (no rows returned)."
+        except MemoryError:
+            return "SQL Error: Result set too large. Add a LIMIT clause to your query."
         except Exception as e:
             return f"SQL Error: {str(e)}"
 

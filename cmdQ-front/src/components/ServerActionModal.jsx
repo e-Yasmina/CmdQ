@@ -86,7 +86,7 @@ export default function ServerActionModal({ type, server, onClose, onConfirm }) 
                             </select>
                         </div>
                         <p className="text-[10px] text-yellow-500/80 italic mt-1">
-                            Note: This will trigger a `pg_dump` or `mysqldump` in the background.
+                            The database schema and data will be exported as a SQL dump.
                         </p>
                     </div>
                 )}

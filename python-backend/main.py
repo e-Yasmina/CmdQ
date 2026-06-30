@@ -1248,6 +1248,7 @@ async def ai_prompt(payload: AIPrompt):
     """Takes user's prompt, fetches schema from DB, constructs context, calls AI, extracts/runs SQL."""
     try:
         cfg = payload.db_config
+        print(f"[CmdQ] /ai/prompt called | db: {cfg.database} | table: {payload.selected_table} | action: {payload.action} | prompt: {payload.prompt[:150]}")
         safe_user = urllib.parse.quote_plus(cfg.user)
         safe_password = urllib.parse.quote_plus(cfg.password)
         
@@ -1266,10 +1267,20 @@ async def ai_prompt(payload: AIPrompt):
         for schema_name, table_name in mentions:
             user_prompt = user_prompt.replace(f"@{schema_name}.{table_name}", f"{schema_name}.{table_name}")
 
-        schema_dict = extract_schema(
-            db_type=cfg.db_type, host=cfg.host, port=cfg.port,
-            user=cfg.user, password=cfg.password, database=cfg.database
-        )
+        try:
+            schema_dict = extract_schema(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database
+            )
+        except Exception as schema_err:
+            err_lower = str(schema_err).lower()
+            if "could not connect" in err_lower or "connection refused" in err_lower or "connection timed out" in err_lower:
+                raise HTTPException(status_code=400, detail=f"Database connection failed: Server at {cfg.host}:{cfg.port} is unreachable. Check if the database server is running and accessible.")
+            if "password" in err_lower and ("failed" in err_lower or "denied" in err_lower):
+                raise HTTPException(status_code=400, detail=f"Database authentication failed: Incorrect username or password for user '{cfg.user}'.")
+            if "database" in err_lower and ("does not exist" in err_lower or "unknown" in err_lower):
+                raise HTTPException(status_code=400, detail=f"Database '{cfg.database}' does not exist on the server.")
+            raise
 
         target_table = None
         if payload.selected_table:
@@ -1375,13 +1386,32 @@ async def ai_prompt(payload: AIPrompt):
                 protected_items=payload.protected_items,
                 session_context=payload.session_context
             )
+            print(f"[CmdQ] Invoking agent with prompt: {payload.prompt[:200]}")
             result = agent.invoke({"messages": [{"role": "user", "content": payload.prompt}]})
             messages = result.get("messages", [])
-            if messages:
-                last = messages[-1]
-                output = last.content if hasattr(last, "content") else str(last)
-            else:
-                output = ""
+            print(f"[CmdQ] Agent returned {len(messages)} messages")
+
+            output_parts = []
+            for i, msg in enumerate(messages):
+                role = getattr(msg, "type", "unknown")
+                content = getattr(msg, "content", "") or ""
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                tc_info = ""
+                if tool_calls:
+                    tc_names = [tc.get("name", "?") for tc in tool_calls]
+                    tc_info = f" [tool_calls: {', '.join(tc_names)}]"
+                if content.strip():
+                    display_content = content.strip()
+                    if role == "tool" and len(display_content) > 500:
+                        display_content = display_content[:500] + f"\n... [TRUNCATED, full length: {len(content)} chars]"
+                    output_parts.append(f"[Step {i}] ({role}){tc_info}:\n{display_content}")
+                    print(f"[CmdQ] Message {i} ({role}): {content[:150]}...{tc_info}")
+                elif tool_calls:
+                    print(f"[CmdQ] Message {i} ({role}): (content empty){tc_info}")
+                else:
+                    print(f"[CmdQ] Message {i} ({role}): (empty)")
+
+            output = "\n\n---\n\n".join(output_parts) if output_parts else "(Agent completed but produced no text output)"
 
             for i, msg in enumerate(messages):
                 tool_calls = getattr(msg, "tool_calls", None) or []
@@ -1396,6 +1426,9 @@ async def ai_prompt(payload: AIPrompt):
                                 execution_results = parsed if isinstance(parsed, list) else [parsed]
                             except (json.JSONDecodeError, TypeError):
                                 execution_results = [{"result": obs}]
+            print(f"[CmdQ] Extracted SQL: {extracted_sql[:200] if extracted_sql else 'None'}")
+            print(f"[CmdQ] Execution results: {len(execution_results)} rows")
+            print(f"[CmdQ] Output length: {len(output)} chars")
         else:
             import tempfile
             try:
@@ -1464,10 +1497,36 @@ async def ai_prompt(payload: AIPrompt):
             "data": execution_results
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
+        error_msg = str(e)
+        err_lower = error_msg.lower()
+        if any(kw in err_lower for kw in ["401", "unauthenticated", "unauthorized", "invalid key", "api_key"]):
+            if "quota" in err_lower or "billing" in err_lower:
+                error_msg = "API quota exceeded or billing issue. Check your plan or try a different model."
+            else:
+                error_msg = "API key is invalid or expired. Update your model's API key in Settings > API Models."
+        elif any(kw in err_lower for kw in ["402", "payment", "billing"]):
+            error_msg = "API payment required. Check your billing status with the AI provider."
+        elif any(kw in err_lower for kw in ["429", "rate limit", "too many requests"]):
+            error_msg = "API rate limit exceeded. Wait a moment and try again."
+        elif any(kw in err_lower for kw in ["timeout", "timed out", "deadline"]):
+            error_msg = "Request timed out. The AI model took too long to respond. Try a simpler prompt or a different model."
+        elif any(kw in err_lower for kw in ["model not found", "not found", "404"]):
+            error_msg = "AI model not found. Check the model name in your API settings."
+        elif any(kw in err_lower for kw in ["unsupported provider", "provider"]):
+            error_msg = "Unsupported AI provider. Choose OpenAI, Gemini, or Anthropic in your model settings."
+        elif any(kw in err_lower for kw in ["connection refused", "connection reset", "connection error", "cannot connect"]):
+            error_msg = "Network error: Could not reach the AI provider's servers. Check your internet connection."
+        elif any(kw in err_lower for kw in ["module", "import", "not installed", "no module"]):
+            missing = error_msg.split("'")[1] if "'" in error_msg else "a required package"
+            error_msg = f"Missing Python package: '{missing}' is not installed. Run: pip install {missing}"
+        elif any(kw in err_lower for kw in ["context window", "maximum context", "too long", "token limit"]):
+            error_msg = "Prompt too long for the model's context window. Try a shorter prompt or reduce the database schema size."
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=f"AI Prompt Execution Failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"AI Error: {error_msg}")
 
 class ExportTableRequest(BaseModel):
     db_config: ConnectionDetails
@@ -1981,10 +2040,6 @@ async def etl_migrate(req: DataMigrationRequest):
     except Exception as e:
         return {"status": "error", "message": f"Data Migration Failed: {str(e)}"}
 
-if __name__ == "__main__":
-    import uvicorn
-    # Typically running on a port that Tauri expects
-    uvicorn.run(app, host="127.0.0.1", port=8000)
 @app.get("/storage/{key}")
 async def get_storage_items(key: str):
     if key not in storage.files:
@@ -2006,3 +2061,8 @@ async def delete_storage_item(key: str, item_id: str):
     if storage.delete_item(key, item_id):
         return {"status": "success", "message": f"Item {item_id} deleted from {key}"}
     raise HTTPException(status_code=500, detail="Failed to delete item")
+
+if __name__ == "__main__":
+    import uvicorn
+    # Typically running on a port that Tauri expects
+    uvicorn.run(app, host="127.0.0.1", port=8000)

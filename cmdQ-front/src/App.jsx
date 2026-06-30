@@ -92,7 +92,7 @@ function App() {
   const [selectedCli, setSelectedCli] = useState("");
   const [customCliCommand, setCustomCliCommand] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
-  const [selectedTable, setSelectedTable] = useState("");
+  const [selectedTable, setSelectedTable] = useState([]);
   const [selectedAction, setSelectedAction] = useState("");
   const [showTableMention, setShowTableMention] = useState(false);
   const [tableMentionFilter, setTableMentionFilter] = useState("");
@@ -415,17 +415,19 @@ function App() {
   const handleRefreshConnection = async (connId) => {
     const connIndex = connections.findIndex(c => c.id === connId);
     if (connIndex === -1) return;
-
     const conn = connections[connIndex];
+
     try {
       // Re-fetch databases
       const dbsData = await apiService.connectDb(conn.config);
       if (dbsData.status === "success") {
+        const updatedConn = { ...conn, databases: dbsData.databases.sort() };
         setConnections(prev => {
           const newConns = [...prev];
-          newConns[connIndex] = { ...conn, databases: dbsData.databases.sort() };
+          newConns[connIndex] = updatedConn;
           return newConns;
         });
+        storageService.saveItem('connections', updatedConn);
       }
 
       // Re-fetch schema for active database if it belongs to this connection
@@ -441,6 +443,7 @@ function App() {
               [activeDatabase]: schema
             }
           };
+          storageService.saveItem('connections', newConns[connIndex]);
           return newConns;
         });
       }
@@ -508,6 +511,7 @@ function App() {
         if (!newConns[connIndex].databases.includes(newDbName)) {
           newConns[connIndex].databases = [...newConns[connIndex].databases, newDbName].sort();
         }
+        storageService.saveItem('connections', newConns[connIndex]);
         return newConns;
       });
       handleDbChange(activeConnectionId, newDbName);
@@ -534,6 +538,7 @@ function App() {
         const newConns = [...prev];
         const newDbs = conn.databases.filter(d => d !== dbName);
         newConns[connIndex] = { ...conn, databases: newDbs };
+        storageService.saveItem('connections', newConns[connIndex]);
         return newConns;
       });
 
@@ -564,6 +569,7 @@ function App() {
 
     setActiveSchemaName(schemaName);
     setActiveTableName(tableName);
+    setSelectedTable([`${schemaName}.${tableName}`]);
 
     const conf = { ...conn.config, database: dbName };
 
@@ -664,6 +670,38 @@ function App() {
     return null;
   };
 
+  const extractAllTablesFromQuery = (query) => {
+    if (!query) return [];
+    const cleaned = query.replace(/^--.*$/gm, '').trim();
+    const tables = [];
+    const regex = /\b(?:from|join)\s+([`"\[]?[a-zA-Z0-9_]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_]+[`"\]]?)?)/gi;
+    let match;
+    while ((match = regex.exec(cleaned)) !== null) {
+      const full = match[1].replace(/[`"\[\]]/g, '');
+      const parts = full.split('.');
+      let schema, table;
+      if (parts.length === 2) {
+        schema = parts[0];
+        table = parts[1];
+      } else {
+        schema = activeConfig?.db_type === 'postgres' ? 'public' : activeDatabase;
+        table = parts[0];
+      }
+      const tableRef = `${schema}.${table}`;
+      if (!tables.includes(tableRef)) {
+        tables.push(tableRef);
+      }
+    }
+    return tables;
+  };
+
+  const extractTableMentions = (text) => {
+    if (!text) return [];
+    const matches = text.match(/@([a-zA-Z0-9_.]+)/g);
+    if (!matches) return [];
+    return [...new Set(matches.map(m => m.slice(1)))];
+  };
+
   const executeManualQuery = async (queryText) => {
     if (!activeConfig || !queryText.trim()) return;
     setSqlResult({ loading: true });
@@ -686,6 +724,8 @@ function App() {
       if (isSelect && extracted) {
         setActiveSchemaName(extracted.schema);
         setActiveTableName(extracted.table);
+        const allTables = extractAllTablesFromQuery(queryText);
+        setSelectedTable(allTables);
       }
 
       setSqlResult({
@@ -789,13 +829,16 @@ function App() {
   const handlePromptChange = (e) => {
     const newValue = e.target.value;
     setPrompt(newValue);
+
+    const mentions = extractTableMentions(newValue);
+    setSelectedTable(mentions);
+    if (mentions.length === 0) {
+      setSelectedAction("");
+    }
+
     const atIndex = newValue.lastIndexOf('@');
     if (atIndex === -1 || (atIndex > 0 && newValue[atIndex - 1] !== ' ' && newValue[atIndex - 1] !== '\t' && newValue[atIndex - 1] !== '(')) {
       setShowTableMention(false);
-      if (atIndex === -1 && !newValue.includes('@')) {
-        setSelectedTable("");
-        setSelectedAction("");
-      }
       return;
     }
     const afterAt = newValue.slice(atIndex + 1);
@@ -811,8 +854,10 @@ function App() {
     const afterMention = prompt.slice(atIndex + 1);
     const endIndex = afterMention.search(/[\s,;)]/);
     const rest = endIndex === -1 ? '' : afterMention.slice(endIndex);
-    setPrompt(beforeAt + '@' + tableName + rest + ' ');
-    setSelectedTable(tableName);
+    const newPrompt = beforeAt + '@' + tableName + rest + ' ';
+    setPrompt(newPrompt);
+    const mentions = extractTableMentions(newPrompt);
+    setSelectedTable(mentions);
     setShowTableMention(false);
   };
 
@@ -871,12 +916,20 @@ function App() {
         protected_items: protectedItems,
         session_context: sessionContext,
         attached_file: attachedFile || undefined,
-        selected_table: selectedTable,
+        selected_table: selectedTable.join(', '),
         action: selectedAction
       };
 
       const data = await apiService.launchAiPrompt(payload, controller.signal);
       setAttachedFile(null);
+
+      console.log("DEBUG launchCli response:", {
+        message: (data.message || "").slice(0, 500),
+        messageLength: (data.message || "").length,
+        extracted_sql: (data.extracted_sql || "").slice(0, 200),
+        dataRows: data.data?.length || 0,
+        hasError: !!data.error
+      });
 
       if (data.extracted_sql) {
         const extracted = extractTableFromQuery(data.extracted_sql);
@@ -888,6 +941,8 @@ function App() {
         if (isSelect && extracted) {
           setActiveSchemaName(extracted.schema);
           setActiveTableName(extracted.table);
+          const allTables = extractAllTablesFromQuery(data.extracted_sql);
+          setSelectedTable(allTables);
 
           const tableInfo = activeSchema?.[extracted.schema]?.[extracted.table];
           if (tableInfo?.constraints) {
@@ -916,7 +971,7 @@ function App() {
         setSqlResult({ error: "Operation stopped by user." });
       } else {
         console.error("CLI Execution Error:", err.message);
-        setSqlResult({ error: "Execution failed. Please check the console for more details." });
+        setSqlResult({ error: err.message || "Execution failed. Please check the console for more details." });
       }
     } finally {
       setCurrentAbortController(null);
@@ -1097,15 +1152,17 @@ function App() {
     } else if (entity.type === 'database') {
       if (action === 'refresh') handleRefreshConnection(entity.server.id);
       if (action === 'delete') handleDropDatabase(entity.server.id, entity.database);
-      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); }
+      if (action === 'export') { setActiveConnectionId(entity.server.id); setActiveDatabase(entity.database); setShowExportDbModal(true); }
+      if (action === 'backup') { setActiveConnectionId(entity.server.id); setActiveDatabase(entity.database); setServerActionModal({ type: 'backup', server: entity.server }); }
+      if (action === 'restore') { setActiveConnectionId(entity.server.id); setActiveDatabase(entity.database); setShowImportDbModal(true); }
       if (action === 'properties') setPropertiesModal({ entity });
     } else if (entity.type === 'schema') {
       if (action === 'refresh') handleRefreshConnection(entity.server.id);
-      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); }
+      if (action === 'export') { setActiveConnectionId(entity.server.id); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setShowExportDbModal(true); }
       if (action === 'properties') setPropertiesModal({ entity });
     } else if (entity.type === 'table') {
       if (action === 'refresh') handleRefreshConnection(entity.server.id);
-      if (action === 'export') { setShowExportDbModal(true); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setActiveTableName(entity.tableName); }
+      if (action === 'export') { setActiveConnectionId(entity.server.id); setActiveDatabase(entity.database); setActiveSchemaName(entity.schemaName); setActiveTableName(entity.tableName); setShowExportDbModal(true); }
       if (action === 'properties') setPropertiesModal({ entity });
     }
   };
@@ -1664,9 +1721,11 @@ function App() {
                 </div>
               )}
 
-              {selectedTable && (
+              {selectedTable.length > 0 && (
                 <div className="flex items-center gap-1.5 px-1 pb-1.5 flex-wrap">
-                  <span className="text-[11px] text-primary font-bold mr-1">@{selectedTable}</span>
+                  {selectedTable.map(t => (
+                    <span key={t} className="text-[11px] text-primary font-bold">@{t}</span>
+                  ))}
                   {["seed", "edit", "delete", "insert", "select", "describe"].map(a => (
                     <button
                       key={a}
@@ -1681,7 +1740,7 @@ function App() {
                     </button>
                   ))}
                   <button
-                    onClick={() => { setSelectedTable(""); setSelectedAction(""); }}
+                    onClick={() => { setSelectedTable([]); setSelectedAction(""); }}
                     className="text-[10px] text-red-400 hover:text-red-300 ml-auto cursor-pointer px-1"
                     title="Clear table selection"
                   >

@@ -32,7 +32,6 @@ export default function ExplorerContextMenu({ x, y, onClose, onAction, entity })
         menuItems = [
             { id: 'refresh', label: 'Refresh', icon: '🔄' },
             { id: 'export', label: 'Export', icon: '📤' },
-            { id: 'backup', label: 'Backup', icon: '💾' },
             { id: 'restore', label: 'Restore', icon: '📥' },
             { id: 'delete', label: 'Delete', icon: '🗑️' },
             { id: 'properties', label: 'Properties', icon: '📋' }
