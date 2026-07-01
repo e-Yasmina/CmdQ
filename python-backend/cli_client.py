@@ -9,19 +9,33 @@ import platform
 MODELS_FILE = "registered_models.json"
 
 from cli_constants import ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND, CLI_ERR_PATH_NOT_FOUND
+from secret_utils import encrypt_api_key, decrypt_api_key
+
+
+def _is_encrypted(value: str) -> bool:
+    return bool(value and value.startswith("gAAAAA"))
 
 
 def get_registered_models():
     if os.path.exists(MODELS_FILE):
         try:
             with open(MODELS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                models = json.load(f)
+            for m in models:
+                raw = m.get("api_key", "")
+                if raw and _is_encrypted(raw):
+                    m["api_key"] = decrypt_api_key(raw)
+            return models
         except:
             pass
     return []
 
 
 def save_registered_models(models):
+    for m in models:
+        raw = m.get("api_key", "")
+        if raw and not _is_encrypted(raw):
+            m["api_key"] = encrypt_api_key(raw)
     with open(MODELS_FILE, "w", encoding="utf-8") as f:
         json.dump(models, f, indent=4)
 

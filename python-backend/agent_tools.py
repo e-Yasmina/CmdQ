@@ -40,8 +40,10 @@ def create_sql_agent(
             base_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{db_config.host}:{db_config.port}/"
             db_name = db_config.database
 
-        engine = create_engine(base_url + db_name)
+        from secret_utils import mask_password
+
         try:
+            engine = create_engine(base_url + db_name)
             with engine.begin() as conn:
                 for ctx_cmd in session_context:
                     if ctx_cmd.strip():
@@ -55,7 +57,7 @@ def create_sql_agent(
         except MemoryError:
             return "SQL Error: Result set too large. Add a LIMIT clause to your query."
         except Exception as e:
-            return f"SQL Error: {str(e)}"
+            return f"SQL Error: {mask_password(str(e))}"
 
     graph = create_agent(
         model=llm,

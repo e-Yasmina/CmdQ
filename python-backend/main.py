@@ -42,6 +42,7 @@ from cli_constants import (
     ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND,
     CLI_ERR_PATH_NOT_FOUND, CLI_ERR_TIMEOUT, CLI_ERR_EMPTY_OUTPUT, CLI_ERR_GENERIC,
 )
+from secret_utils import mask_password
 
 # Configure logging
 logging.basicConfig(
@@ -105,7 +106,7 @@ async def connect(details: ConnectionDetails):
         session.close()
         return {"status": "success", "token": "temp-token-xyz"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Connection failed: {mask_password(str(e))}")
 
 @app.post("/databases")
 async def get_databases(details: ConnectionDetails):
@@ -130,7 +131,7 @@ async def get_databases(details: ConnectionDetails):
         session.close()
         return {"status": "success", "databases": databases}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Database list extraction failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Database list extraction failed: {mask_password(str(e))}")
 
 @app.post("/create_database")
 async def create_database(req: CreateDatabaseRequest):
@@ -157,7 +158,7 @@ async def create_database(req: CreateDatabaseRequest):
                 
         return {"status": "success", "message": f"Database '{req.new_db_name}' created successfully."}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to create database: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to create database: {mask_password(str(e))}")
 
 @app.post("/drop_database")
 async def drop_database(req: DropDatabaseRequest):
@@ -189,7 +190,7 @@ async def drop_database(req: DropDatabaseRequest):
                 
         return {"status": "success", "message": f"Database '{req.db_name}' dropped successfully."}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to drop database: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to drop database: {mask_password(str(e))}")
 
 @app.post("/schema")
 async def get_schema(details: ConnectionDetails):
@@ -205,7 +206,7 @@ async def get_schema(details: ConnectionDetails):
         )
         return {"status": "success", "schema": schema_dict}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Schema extraction failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Schema extraction failed: {mask_password(str(e))}")
 
 @app.post("/analyze/protection")
 async def analyze_protection(req: ProtectionAnalysisRequest):
@@ -280,7 +281,7 @@ async def analyze_protection(req: ProtectionAnalysisRequest):
         return {"status": "success", "report": report}
     except Exception as e:
         if 'session' in locals(): session.close()
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": mask_password(str(e))}
 
 @app.post("/query")
 async def execute_query(req: QueryRequest):
@@ -335,7 +336,7 @@ async def execute_query(req: QueryRequest):
         
         return {"status": "success", "data": execution_results, "rows_affected": rowcount, "message": "Query executed successfully."}
     except Exception as e:
-        return {"status": "error", "message": f"Query Failed: {str(e)}"}
+        return {"status": "error", "message": f"Query Failed: {mask_password(str(e))}"}
 
 @app.post("/table_data")
 async def get_table_data(req: TableDataRequest):
@@ -382,7 +383,7 @@ async def get_table_data(req: TableDataRequest):
         session.close()
         return {"status": "success", "data": execution_results}
     except Exception as e:
-        return {"status": "error", "message": f"Failed to fetch table data: {str(e)}"}
+        return {"status": "error", "message": f"Failed to fetch table data: {mask_password(str(e))}"}
 
 @app.get("/ai/detect_cli")
 async def detect_cli():
@@ -478,7 +479,6 @@ async def launch_cli(details: CLILaunchDetails):
         env["DB_HOST"] = cfg.host
         env["DB_PORT"] = str(cfg.port)
         env["DB_USER"] = cfg.user
-        env["DB_PASS"] = cfg.password
         env["DB_NAME"] = cfg.database
         
         cmd_to_run = details.command
@@ -500,7 +500,7 @@ async def launch_cli(details: CLILaunchDetails):
         return {"status": "success", "message": f"Successfully spawned debug console for '{cmd_to_run}'"}
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=f"Failed to launch debug terminal: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to launch debug terminal: {mask_password(str(e))}")
 
 @app.post("/ai/launch_debug")
 async def launch_debug(details: CLILaunchDetails):
@@ -570,7 +570,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
                     metrics["admins"] = [str(r[0]) for r in roles_res if r[1] is True]
                     metrics["total_users"] = len(roles_res)
                 except Exception as e:
-                    metrics["permissions_error"] = str(e)
+                    metrics["permissions_error"] = mask_password(str(e))
             else:
                 roles_q = "SELECT user, Super_priv FROM mysql.user;"
                 try:
@@ -578,12 +578,12 @@ async def analyze_security(req: SecurityAnalysisRequest):
                     metrics["admins"] = [str(r[0]) for r in roles_res if r[1] == 'Y']
                     metrics["total_users"] = len(roles_res)
                 except Exception as e:
-                    metrics["permissions_error"] = str(e)
+                    metrics["permissions_error"] = mask_password(str(e))
         
         session.close()
     except Exception as e:
         session.close()
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": mask_password(str(e))}
 
     ai_summary = ""
     structured_analysis = None
@@ -596,7 +596,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
             output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "security", timeout=420)
             ai_summary = output
         except Exception as e:
-            ai_summary = f"Failed to generate AI analysis: {str(e)}"
+            ai_summary = f"Failed to generate AI analysis: {mask_password(str(e))}"
 
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
@@ -626,7 +626,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
                     metrics["table_size_bytes"] = size_res[1] if size_res else 0
                     metrics["index_size_bytes"] = metrics["total_size_bytes"] - metrics["table_size_bytes"]
                 except Exception as e:
-                    metrics["size_error"] = str(e)
+                    metrics["size_error"] = mask_password(str(e))
 
                 # Scan Metrics (Seq vs Index)  
                 scan_q = "SELECT seq_scan, seq_tup_read, idx_scan, idx_tup_fetch FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
@@ -684,7 +684,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
                         metrics["rollbacks"] = db_stat_res[3]
                         metrics["conflicts"] = db_stat_res[4]
                         metrics["deadlocks"] = db_stat_res[5]
-                except Exception as e: metrics["stat_error"] = str(e)
+                except Exception as e: metrics["stat_error"] = mask_password(str(e))
                 
                 # Active Connections
                 conn_q = "SELECT count(*) as active, sum(case when state = 'active' then 1 else 0 end) as executing FROM pg_stat_activity WHERE datname = :d;"
@@ -728,7 +728,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
         session.close()
     except Exception as e:
         session.close()
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": mask_password(str(e))}
 
     ai_summary = ""
     structured_analysis = None
@@ -740,7 +740,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
             output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "performance", timeout=300)
             ai_summary = output
         except Exception as e:
-            ai_summary = f"Failed to generate AI performance insight: {str(e)}"
+            ai_summary = f"Failed to generate AI performance insight: {mask_password(str(e))}"
             
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
@@ -852,7 +852,7 @@ async def analyze_data(req: DataAnalysisRequest):
         session.close()
     except Exception as e:
         session.close()
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": mask_password(str(e))}
 
     ai_summary = ""
     structured_analysis = None
@@ -864,7 +864,7 @@ async def analyze_data(req: DataAnalysisRequest):
             output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "data", timeout=300)
             ai_summary = output
         except Exception as e:
-            ai_summary = f"Failed to generate AI output: {str(e)}"
+            ai_summary = f"Failed to generate AI output: {mask_password(str(e))}"
             
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
@@ -955,7 +955,7 @@ async def analyze_summary(req: SummaryAnalysisRequest):
         session.close()
     except Exception as e:
         session.close()
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": mask_password(str(e))}
 
     ai_summary = ""
     structured_analysis = None
@@ -967,7 +967,7 @@ async def analyze_summary(req: SummaryAnalysisRequest):
             output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "summary", timeout=300)
             ai_summary = output
         except Exception as e:
-            ai_summary = f"Failed to generate AI output: {str(e)}"
+            ai_summary = f"Failed to generate AI output: {mask_password(str(e))}"
             
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
 
@@ -992,7 +992,7 @@ def translate_table(req: TranslateRequest):
         translated_data = json.loads(output)
         return {"status": "success", "data": translated_data}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Translation failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Translation failed: {mask_password(str(e))}")
 
 @app.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
@@ -1235,11 +1235,11 @@ async def ai_prompt(payload: AIPrompt):
                                 if rp.returns_rows:
                                     execution_results = [dict(zip(rp.keys(), row)) for row in rp.fetchall()]
                         except Exception as sql_err:
-                            execution_results = [{"error": str(sql_err)}]
+                            execution_results = [{"error": mask_password(str(sql_err))}]
             except subprocess.TimeoutExpired:
                 output = "CLI process timed out after 300 seconds."
             except Exception as cli_err:
-                output = f"CLI Error: {str(cli_err)}"
+                output = f"CLI Error: {mask_password(str(cli_err))}"
 
         return {
             "status": "success",
@@ -1252,7 +1252,7 @@ async def ai_prompt(payload: AIPrompt):
         raise
     except Exception as e:
         import traceback
-        error_msg = str(e)
+        error_msg = mask_password(str(e))
         err_lower = error_msg.lower()
         if any(kw in err_lower for kw in ["401", "unauthenticated", "unauthorized", "invalid key", "api_key"]):
             if "quota" in err_lower or "billing" in err_lower:
@@ -1361,7 +1361,7 @@ def generate_native_sql_dump(cfg, temp_path):
         logger.info(f"Native SQL export completed: {temp_path}")
         return True
     except Exception as e:
-        logger.exception(f"Native SQL Export Error: {str(e)}")
+        logger.exception(f"Native SQL Export Error: {mask_password(str(e))}")
         raise e
 
 @app.post("/export/table")
@@ -1421,7 +1421,7 @@ async def export_table(req: ExportTableRequest):
             raise HTTPException(status_code=400, detail="Unsupported format")
             
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Export Failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Export Failed: {mask_password(str(e))}")
 
 @app.post("/export/database")
 async def export_database(req: ExportDatabaseRequest, background_tasks: BackgroundTasks):
@@ -1454,8 +1454,8 @@ async def export_database(req: ExportDatabaseRequest, background_tasks: Backgrou
             filename=f"{cfg.database}_dump.sql"
         )
     except Exception as e:
-        logger.exception(f"Database Export Failed: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Database Export Failed: {str(e)}")
+        logger.exception(f"Database Export Failed: {mask_password(str(e))}")
+        raise HTTPException(status_code=400, detail=f"Database Export Failed: {mask_password(str(e))}")
 
 @app.post("/import/scan")
 async def import_scan(
@@ -1519,7 +1519,7 @@ async def import_scan(
 
         return {"status": "success", "report": report}
     except Exception as e:
-        return {"status": "error", "message": f"Scan failed: {str(e)}"}
+        return {"status": "error", "message": f"Scan failed: {mask_password(str(e))}"}
 
 @app.post("/import/table")
 async def import_table(
@@ -1588,7 +1588,7 @@ async def import_table(
         session.close()
         return {"status": "success", "message": f"Successfully imported data. Processed {inserted} items."}
     except Exception as e:
-        return {"status": "error", "message": f"Table Import Failed: {str(e)}"}
+        return {"status": "error", "message": f"Table Import Failed: {mask_password(str(e))}"}
 
 @app.post("/import/database")
 async def import_database(
@@ -1705,8 +1705,8 @@ async def import_database(
 
         return {"status": "success", "message": f"Database import completed. Executed {total_executed} SQL statements in database '{current_db}'."}
     except Exception as e:
-        logger.exception(f"Database Import Failed: {str(e)}")
-        return {"status": "error", "message": f"Database Import Failed: {str(e)}"}
+        logger.exception(f"Database Import Failed: {mask_password(str(e))}")
+        return {"status": "error", "message": f"Database Import Failed: {mask_password(str(e))}"}
 
 @app.post("/etl/migrate")
 async def etl_migrate(req: DataMigrationRequest):
@@ -1804,7 +1804,7 @@ async def etl_migrate(req: DataMigrationRequest):
         
         return {"status": "success", "message": f"Successfully migrated {inserted} rows."}
     except Exception as e:
-        return {"status": "error", "message": f"Data Migration Failed: {str(e)}"}
+        return {"status": "error", "message": f"Data Migration Failed: {mask_password(str(e))}"}
 
 
 def get_desktop_path():
@@ -1847,7 +1847,7 @@ async def ai_save_file(req: SaveFileRequest):
         return {"status": "success", "path": final_path}
     except Exception as e:
         print(f"[CmdQ][save_file] Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {mask_password(str(e))}")
 
 
 @app.get("/storage/{key}")
