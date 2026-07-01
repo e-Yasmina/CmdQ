@@ -283,5 +283,16 @@ export const apiService = {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to analyze protection");
         return data;
+    },
+
+    saveFile: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/ai/save_file`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to save file");
+        return data;
     }
 };

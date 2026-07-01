@@ -3,6 +3,7 @@ import ScrollArea from './ScrollArea';
 import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
+import SaveFileDialog from './SaveFileDialog';
 
 const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_$]{0,127}$/;
 
@@ -24,6 +25,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     const [showExportModal, setShowExportModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
     const [showDbImportModal, setShowDbImportModal] = useState(false);
+    const [saveDialog, setSaveDialog] = useState(null); // { content, filename } or null
 
     useEffect(() => {
         setMutationError("");
@@ -442,11 +444,43 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
 
             {/* AI Text Output */}
             {result.message && (
-                <ScrollArea className="max-h-32 overflow-y-auto mt-2 border border-border rounded bg-background shrink-0">
-                    <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3">
-                        {result.message}
-                    </div>
-                </ScrollArea>
+              <ScrollArea className="max-h-48 overflow-y-auto mt-2 border border-border rounded bg-background shrink-0">
+                <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3">
+                  {(() => {
+                    const parts = result.message.split(/(```[\w]*\n[\s\S]*?```)/g);
+                    return parts.map((part, i) => {
+                      const codeMatch = part.match(/^```(\w*)\n([\s\S]*?)```$/);
+                      if (codeMatch) {
+                        const lang = codeMatch[1] || 'text';
+                        const code = codeMatch[2];
+                        return (
+                          <div key={i} className="my-2">
+                            <div className="bg-black/40 rounded-t border border-border/50 px-3 py-1 text-[10px] text-gray-500 uppercase flex justify-between items-center">
+                              <span>{lang}</span>
+                              <button
+                                onClick={() => setSaveDialog({ content: code, filename: `code_block_${i}.${lang || 'txt'}` })}
+                                className="text-cyan-400 hover:text-cyan-300 transition-colors font-bold"
+                              >
+                                Save to file
+                              </button>
+                            </div>
+                            <pre className="bg-black/60 rounded-b border border-t-0 border-border/50 p-2 text-xs text-gray-300 overflow-x-auto">{code}</pre>
+                          </div>
+                        );
+                      }
+                      return <span key={i}>{part}</span>;
+                    });
+                  })()}
+                </div>
+              </ScrollArea>
+            )}
+
+            {saveDialog && (
+              <SaveFileDialog
+                content={saveDialog.content}
+                defaultFilename={saveDialog.filename}
+                onClose={() => setSaveDialog(null)}
+              />
             )}
 
             {/* SQL Executed */}

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, ANY
 from fastapi.testclient import TestClient
 import main
+import cli_client
 from main import app
 
 client = TestClient(app)
@@ -36,7 +37,7 @@ def isolate_file_storage(monkeypatch):
 
     models_file = test_dir / "registered_models.json"
     models_file.write_text("[]", encoding="utf-8")
-    monkeypatch.setattr(main, "MODELS_FILE", str(models_file))
+    monkeypatch.setattr(cli_client, "MODELS_FILE", str(models_file))
 
     storage_files = {}
     for key in main.storage.files:
@@ -98,14 +99,19 @@ def mock_engine():
 
 
 @pytest.fixture
-def mock_subprocess():
-    """Mocks subprocess.run to return a fake CLI response with SQL block."""
-    with patch("main.subprocess.run") as mock_run:
-        mock_proc = MagicMock()
-        mock_proc.stdout = "Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone."
-        mock_proc.stderr = ""
-        mock_run.return_value = mock_proc
+def mock_subprocess_gemini():
+    """Mocks _run_subprocess_with_files in main for the gemini branch."""
+    with patch("main._run_subprocess_with_files") as mock_run:
+        mock_run.return_value = ("Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone.", "")
         yield mock_run
+
+
+@pytest.fixture
+def mock_which():
+    """Mocks shutil.which in cli_client so command resolution passes."""
+    with patch("cli_client.shutil.which") as m:
+        m.return_value = "C:\\dummy\\cmd.exe"
+        yield m
 
 
 @pytest.fixture
@@ -631,7 +637,7 @@ class TestAiPrompt:
         assert isinstance(kwargs["system_prompt"], str)
         assert len(kwargs["system_prompt"]) > 0
 
-    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """CLI path: returns the same response shape as API path."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",
@@ -647,7 +653,7 @@ class TestAiPrompt:
         assert body["extracted_sql"] == "SELECT * FROM users;"
         assert isinstance(body["data"], list)
 
-    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """CLI path: extracted SQL is executed against the database."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",
@@ -657,13 +663,10 @@ class TestAiPrompt:
         body = resp.json()
         assert body["data"][0]["id"] == 1
 
-    def test_cli_path_no_sql_in_response(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_no_sql_in_response(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: when no SQL block is in output, data stays empty."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "Just a plain text response with no SQL."
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("Just a plain text response with no SQL.", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Hello", "db_config": db_config
             })
@@ -672,13 +675,10 @@ class TestAiPrompt:
             assert body["extracted_sql"] is None
             assert body["data"] == []
 
-    def test_cli_path_safety_drop(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_safety_drop(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: DROP statements are blocked."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "```sql\nDROP TABLE users;\n```"
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("```sql\nDROP TABLE users;\n```", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Drop users table", "db_config": db_config
             })
@@ -686,22 +686,19 @@ class TestAiPrompt:
             assert body["status"] == "success"
             assert "BLOCKED BY SAFETY SYSTEM" in body["data"][0]["error"]
 
-    def test_cli_path_safety_delete_without_where(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_safety_delete_without_where(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: DELETE without WHERE is blocked."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "```sql\nDELETE FROM users;\n```"
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("```sql\nDELETE FROM users;\n```", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Delete all", "db_config": db_config
             })
             body = resp.json()
             assert "BLOCKED BY SAFETY SYSTEM" in body["data"][0]["error"]
 
-    def test_cli_path_timeout(self, db_config, mock_no_models):
+    def test_cli_path_timeout(self, db_config, mock_no_models, mock_which):
         """CLI path: timeout returns a user-friendly message."""
-        with patch("main.subprocess.run") as mock_run:
+        with patch("cli_client.subprocess.run") as mock_run:
             import subprocess
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=300)
             resp = client.post("/ai/prompt", json={
@@ -724,7 +721,7 @@ class TestAiPrompt:
         })
         assert resp.status_code == 200
 
-    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """Attached file metadata is accepted."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",

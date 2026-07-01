@@ -17,6 +17,8 @@ import re
 import time
 import traceback
 import uvicorn
+import platform
+from pathlib import Path
 from database import get_db_connection
 from db_context_builder import extract_schema, extract_relationships, build_base_prompt, parse_table_mentions, build_mentioned_tables_context
 from sqlalchemy import text, create_engine, MetaData, Table, select
@@ -24,6 +26,22 @@ from sqlalchemy.schema import CreateTable
 from persistence_manager import storage
 from fastapi.middleware.cors import CORSMiddleware
 from process_manager import manager as process_manager
+
+from models import (
+    ConnectionDetails, QueryRequest, TableDataRequest, ChatMessage, AIPrompt,
+    SecurityAnalysisRequest, PerformanceAnalysisRequest, ProtectionAnalysisRequest,
+    DataAnalysisRequest, SummaryAnalysisRequest, FieldMapping, DataMigrationRequest,
+    PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, RegisterAPIModel,
+    CLILaunchDetails, TranslateRequest, ExportTableRequest, ExportDatabaseRequest,
+)
+from cli_client import (
+    get_registered_models, save_registered_models, resolve_and_validate_command,
+    invoke_llm_simple, invoke_llm_structured, _run_subprocess_with_files,
+)
+from cli_constants import (
+    ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND,
+    CLI_ERR_PATH_NOT_FOUND, CLI_ERR_TIMEOUT, CLI_ERR_EMPTY_OUTPUT, CLI_ERR_GENERIC,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -37,7 +55,8 @@ app = FastAPI(title="Antigravity Engine Sidecar")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
+    allow_origin_regex=r"^(https?://.*|null)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,92 +73,8 @@ def validate_identifier(name: str, label: str = "identifier"):
         raise ValueError(f"Invalid {label} '{name}': must start with a letter or underscore, contain only letters, digits, underscores, or $, max 128 chars")
     return name
 
-class ConnectionDetails(BaseModel):
-    db_type: str
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str = ""
-
-class QueryRequest(BaseModel):
-    query: str
-    db_config: ConnectionDetails
-    session_context: List[str] = []
-
-class TableDataRequest(BaseModel):
-    table_name: str
-    schema_name: str
-    limit: int = 100
-    offset: int = 0
-    db_config: ConnectionDetails
-    session_context: List[str] = []
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class AIPrompt(BaseModel):
-    prompt: str
-    command: str
-    db_config: ConnectionDetails
-    schema_data: Dict[str, Any] = None
-    chat_history: List[ChatMessage] = []
-    protected_items: List[str] = []
-    session_context: List[str] = []
-    attached_file: Dict[str, Any] = None
-    selected_table: str = ""
-    action: str = ""
-
-class SecurityAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
-
-class PerformanceAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
-
-class ProtectionAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str
-    table_name: str
-
-class DataAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
-
-class SummaryAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
-
-class FieldMapping(BaseModel):
-    source_fields: List[str]
-    target_fields: List[str] = []
-    target_field: str = ""
-    transformation: str = "none"
-
-class DataMigrationRequest(BaseModel):
-    source_config: ConnectionDetails
-    source_schema: str = ""
-    source_table: str
-    target_config: ConnectionDetails
-    target_schema: str = ""
-    target_table: str
-    mappings: List[FieldMapping]
 
 import socket
-
-class PortCheckDetails(BaseModel):
-    host: str
-    port: int
 
 @app.post("/check_port")
 async def check_port(details: PortCheckDetails):
@@ -197,10 +132,6 @@ async def get_databases(details: ConnectionDetails):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database list extraction failed: {str(e)}")
 
-class CreateDatabaseRequest(BaseModel):
-    db_config: ConnectionDetails
-    new_db_name: str
-
 @app.post("/create_database")
 async def create_database(req: CreateDatabaseRequest):
     """Creates a new database."""
@@ -227,10 +158,6 @@ async def create_database(req: CreateDatabaseRequest):
         return {"status": "success", "message": f"Database '{req.new_db_name}' created successfully."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to create database: {str(e)}")
-
-class DropDatabaseRequest(BaseModel):
-    db_config: ConnectionDetails
-    db_name: str
 
 @app.post("/drop_database")
 async def drop_database(req: DropDatabaseRequest):
@@ -457,21 +384,6 @@ async def get_table_data(req: TableDataRequest):
     except Exception as e:
         return {"status": "error", "message": f"Failed to fetch table data: {str(e)}"}
 
-MODELS_FILE = "registered_models.json"
-
-def get_registered_models():
-    if os.path.exists(MODELS_FILE):
-        try:
-            with open(MODELS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return []
-
-def save_registered_models(models):
-    with open(MODELS_FILE, "w", encoding="utf-8") as f:
-        json.dump(models, f, indent=4)
-
 @app.get("/ai/detect_cli")
 async def detect_cli():
     """Detects installed AI CLI tools in the environment."""
@@ -517,14 +429,6 @@ async def detect_cli():
     
     return {"status": "success", "clis": available_clis}
 
-class RegisterAPIModel(BaseModel):
-    id: str
-    name: str
-    provider: str
-    model: str
-    api_key: str
-    base_url: str = ""
-
 @app.get("/ai/registered_models")
 async def list_registered_models():
     models = get_registered_models()
@@ -535,11 +439,11 @@ async def register_api_model(m: RegisterAPIModel):
     models = get_registered_models()
     for existing in models:
         if existing["id"] == m.id:
-            existing.update(m.dict())
+            existing.update(m.model_dump())
             save_registered_models(models)
             return {"status": "success", "message": "Updated registered API Model."}
             
-    models.append(m.dict())
+    models.append(m.model_dump())
     save_registered_models(models)
     return {"status": "success", "message": "Registered new API Model."}
 
@@ -554,10 +458,6 @@ async def delete_registered_model(model_id: str):
 
 
 from process_manager import manager as process_manager
-
-class CLILaunchDetails(BaseModel):
-    command: str
-    db_config: ConnectionDetails
 
 @app.post("/ai/launch_cli")
 async def launch_cli(details: CLILaunchDetails):
@@ -693,36 +593,7 @@ async def analyze_security(req: SecurityAnalysisRequest):
         prompt_str = f"Analyze the following security metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Provide a brief, concise security risk assessment and simple recommendations if any. Use plain text or light markdown. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
-            cmd_to_run = req.command
-            models = get_registered_models()
-            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-            output = ""
-            
-            if selected_api_model:
-                from llm_client import get_llm
-                from db_context_builder import run_structured_analysis
-                llm = get_llm(
-                    provider=selected_api_model["provider"],
-                    api_key=selected_api_model["api_key"],
-                    model=selected_api_model["model"],
-                    base_url=selected_api_model.get("base_url") or ""
-                )
-                output, structured_analysis = run_structured_analysis(llm, "security", prompt_str)
-            else:
-                # One-shot CLI execution
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=420)
-                    output = result.stdout.strip()
-                else:
-                    import tempfile
-                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
-                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=120)
-                    output = result.stdout.strip()
-                    try: os.remove(pf)
-                    except: pass
-
+            output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "security", timeout=420)
             ai_summary = output
         except Exception as e:
             ai_summary = f"Failed to generate AI analysis: {str(e)}"
@@ -866,36 +737,7 @@ async def analyze_performance(req: PerformanceAnalysisRequest):
         prompt_str = f"Analyze these performance metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify bottlenecks based on cache hit ratio, index usage, active connections, or lock conflicts. Provide a brief actionable performance tuning assessment. Don't mention specific commands, just the tuning concept. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
-            cmd_to_run = req.command
-            models = get_registered_models()
-            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-            output = ""
-            
-            if selected_api_model:
-                from llm_client import get_llm
-                from db_context_builder import run_structured_analysis
-                llm = get_llm(
-                    provider=selected_api_model["provider"],
-                    api_key=selected_api_model["api_key"],
-                    model=selected_api_model["model"],
-                    base_url=selected_api_model.get("base_url") or ""
-                )
-                output, structured_analysis = run_structured_analysis(llm, "performance", prompt_str)
-            else:
-                # One-shot CLI execution
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                else:
-                    import tempfile
-                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
-                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                    try: os.remove(pf)
-                    except: pass
-                        
+            output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "performance", timeout=300)
             ai_summary = output
         except Exception as e:
             ai_summary = f"Failed to generate AI performance insight: {str(e)}"
@@ -1019,36 +861,7 @@ async def analyze_data(req: DataAnalysisRequest):
         prompt_str = f"Analyze these data quality and volume metrics for {metrics['level']} '{metrics['target']}': {raw_json_metrics}. Identify any notable data skew, missing values, fill rates, unique ratios, or table sizing insights. Provide a concise data assessment emphasizing structural characteristics or potential data quality red flags. Do not mention any of the files, backend code, or python files you might have read in your response. Just provide the insights directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
-            cmd_to_run = req.command
-            models = get_registered_models()
-            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-            output = ""
-            
-            if selected_api_model:
-                from llm_client import get_llm
-                from db_context_builder import run_structured_analysis
-                llm = get_llm(
-                    provider=selected_api_model["provider"],
-                    api_key=selected_api_model["api_key"],
-                    model=selected_api_model["model"],
-                    base_url=selected_api_model.get("base_url") or ""
-                )
-                output, structured_analysis = run_structured_analysis(llm, "data", prompt_str)
-            else:
-                # One-shot CLI execution
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                else:
-                    import tempfile
-                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
-                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                    try: os.remove(pf)
-                    except: pass
-                        
+            output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "data", timeout=300)
             ai_summary = output
         except Exception as e:
             ai_summary = f"Failed to generate AI output: {str(e)}"
@@ -1151,45 +964,12 @@ async def analyze_summary(req: SummaryAnalysisRequest):
         prompt_str = f"Provide a comprehensive summary about the {metrics['level']} '{metrics['target']}', based on these metrics: {raw_json_metrics}. Briefly describe its structure, schema complexity, or overall footprint. Do not mention any of the files, backend code, or python files (like main.py or database.py) you might have read in your response. Just provide the summary directly to the user. VERY IMPORTANT: When you are finished with your response, you MUST end with the exact token: __CMDQ_DONE__"
         
         try:
-            cmd_to_run = req.command
-            models = get_registered_models()
-            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-            output = ""
-            
-            if selected_api_model:
-                from llm_client import get_llm
-                from db_context_builder import run_structured_analysis
-                llm = get_llm(
-                    provider=selected_api_model["provider"],
-                    api_key=selected_api_model["api_key"],
-                    model=selected_api_model["model"],
-                    base_url=selected_api_model.get("base_url") or ""
-                )
-                output, structured_analysis = run_structured_analysis(llm, "summary", prompt_str)
-            else:
-                # One-shot CLI execution
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    result = subprocess.run([cmd_to_run, "-p", prompt_str], capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                else:
-                    import tempfile
-                    pf = os.path.join(tempfile.gettempdir(), "cmdq_analyze_prompt.txt")
-                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                    try: os.remove(pf)
-                    except: pass
-                        
+            output, structured_analysis = invoke_llm_structured(req.command, prompt_str, "summary", timeout=300)
             ai_summary = output
         except Exception as e:
             ai_summary = f"Failed to generate AI output: {str(e)}"
             
     return {"status": "success", "metrics": metrics, "ai_summary": ai_summary, "structured_analysis": structured_analysis}
-
-class TranslateRequest(BaseModel):
-    command: str
-    table_data: list
 
 @app.post("/ai/translate_table")
 def translate_table(req: TranslateRequest):
@@ -1197,57 +977,7 @@ def translate_table(req: TranslateRequest):
         raw_json_data = json.dumps(req.table_data)
         prompt_str = f"You are a database localization tool. Translate the following JSON array of database rows into English (or the closest human-readable language if you can infer intent). Keep the exact same JSON structure (an array of objects). Translate the data values if they are text. If the keys (column headers) are in a foreign language, translate the keys to English too. Output ONLY valid JSON array of objects without any markdown blocks or backticks. JSON:\n{raw_json_data}\n\nVERY IMPORTANT: Output ONLY raw JSON, nothing else."
         
-        cmd_to_run = req.command
-        models = get_registered_models()
-        selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
-        output = ""
-
-        if selected_api_model:
-            from llm_client import get_llm
-            llm = get_llm(
-                provider=selected_api_model["provider"],
-                api_key=selected_api_model["api_key"],
-                model=selected_api_model["model"],
-                base_url=selected_api_model.get("base_url") or ""
-            )
-            response = llm.invoke(prompt_str)
-            output = response.content
-        else:
-            import tempfile
-            try:
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    node_script = None
-                    if cmd_to_run.lower().endswith((".cmd", ".bat")):
-                        try:
-                            with open(cmd_to_run, "r") as f:
-                                cmd_content = f.read()
-                            import re as re_mod
-                            match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
-                            if match:
-                                raw = match.group(1)
-                                cmd_dir = os.path.dirname(cmd_to_run)
-                                node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
-                                node_script = os.path.normpath(node_script)
-                        except:
-                            pass
-
-                    if node_script and os.path.exists(node_script):
-                        run_cmd = ["node", node_script, "-p", prompt_str]
-                    else:
-                        run_cmd = [cmd_to_run, "-p", prompt_str[:7000]]
-
-                    result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                else:
-                    pf = os.path.join(tempfile.gettempdir(), "cmdq_translate_prompt.txt")
-                    with open(pf, "w", encoding="utf-8") as f: f.write(prompt_str)
-                    result = subprocess.run(f'type "{pf}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300)
-                    output = result.stdout.strip()
-                    try: os.remove(pf)
-                    except: pass
-            except subprocess.TimeoutExpired:
-                raise Exception("CLI process timed out after 300 seconds")
+        output = invoke_llm_simple(req.command, prompt_str, timeout=300)
                     
         import re
         sql_match = re.search(r'```(?:json)?\s*(.*?)\s*```', output, re.IGNORECASE | re.DOTALL)
@@ -1375,17 +1105,19 @@ async def ai_prompt(payload: AIPrompt):
         )
 
         cmd_to_run = payload.command
-        
-        # We explicitly write the massive schema + prompt context to a temporary file 
-        # and pipe it directly to the CLI tool using standard input redirection.
-        # This completely bypasses Windows CMD's 8191 character argument limit.
-        import tempfile
-        
+
         models = get_registered_models()
         is_direct_cli = "\\" in cmd_to_run or "/" in cmd_to_run or cmd_to_run.endswith((".exe", ".cmd", ".bat", ".ps1"))
         selected_api_model = None
         if not is_direct_cli:
             selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
+
+        if selected_api_model:
+            print(f"[CmdQ] Resolved model: provider={selected_api_model['provider']}, model={selected_api_model['model']}, id={selected_api_model['id']}")
+        else:
+            print(f"[CmdQ] Resolved CLI: command={cmd_to_run}, is_direct_path={is_direct_cli}")
+        print(f"[CmdQ] Base prompt length: {len(base_prompt)} chars, preview: {base_prompt[:300]}...")
+        print(f"[CmdQ] User prompt: {payload.prompt[:200]}")
 
         output = ""
         extracted_sql = None
@@ -1451,7 +1183,6 @@ async def ai_prompt(payload: AIPrompt):
             print(f"[CmdQ] Execution results: {len(execution_results)} rows")
             print(f"[CmdQ] Output length: {len(output)} chars")
         else:
-            import tempfile
             try:
                 cmd_lower = cmd_to_run.lower()
                 if "gemini" in cmd_lower:
@@ -1475,16 +1206,15 @@ async def ai_prompt(payload: AIPrompt):
                     else:
                         run_cmd = [cmd_to_run, "-p", base_prompt[:7000]]
 
-                    cli_result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=300, env=env)
-                    output = cli_result.stdout.strip()
+                    gemini_stdout, _ = _run_subprocess_with_files(run_cmd, "", timeout=300, env=env)
+                    output = gemini_stdout.strip()
                 else:
-                    prompt_file = os.path.join(tempfile.gettempdir(), "cmdq_prompt.txt")
-                    with open(prompt_file, "w", encoding="utf-8") as pf:
-                        pf.write(base_prompt)
-                    cli_result = subprocess.run(f'type "{prompt_file}" | "{cmd_to_run}"', shell=True, capture_output=True, text=True, timeout=300, env=env)
-                    output = cli_result.stdout.strip()
-                    try: os.remove(prompt_file)
-                    except: pass
+                    output = invoke_llm_simple(cmd_to_run, base_prompt, timeout=300, env=env)
+
+                if not output:
+                    output = f"[CmdQ] Command '{cmd_to_run}' produced no output. If you expected AI-generated results, try selecting an API model from the dropdown instead of a CLI command."
+
+                print(f"[CmdQ] Raw output from CLI/model ({cmd_to_run}): length={len(output)} chars, preview={output[:600]}")
 
                 sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
                 if sql_match:
@@ -1546,18 +1276,14 @@ async def ai_prompt(payload: AIPrompt):
             error_msg = f"Missing Python package: '{missing}' is not installed. Run: pip install {missing}"
         elif any(kw in err_lower for kw in ["context window", "maximum context", "too long", "token limit"]):
             error_msg = "Prompt too long for the model's context window. Try a shorter prompt or reduce the database schema size."
+        elif "not allowed" in err_lower:
+            error_msg = f"CLI command not allowed: {error_msg}"
+        elif "not found in path" in err_lower:
+            error_msg = f"CLI command not found: {error_msg}"
+        elif "path not found" in err_lower:
+            error_msg = f"CLI command path not found: {error_msg}"
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"AI Error: {error_msg}")
-
-class ExportTableRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str
-    table_name: str
-    format: str = "csv"
-
-class ExportDatabaseRequest(BaseModel):
-    db_config: ConnectionDetails
-    format: str = "sql"
 
 def generate_native_sql_dump(cfg, temp_path):
     """Generates a complete SQL dump using SQLAlchemy reflection (no external binaries needed)."""
@@ -2079,6 +1805,50 @@ async def etl_migrate(req: DataMigrationRequest):
         return {"status": "success", "message": f"Successfully migrated {inserted} rows."}
     except Exception as e:
         return {"status": "error", "message": f"Data Migration Failed: {str(e)}"}
+
+
+def get_desktop_path():
+    if platform.system() == "Windows":
+        return Path(os.environ.get("USERPROFILE", "")) / "Desktop"
+    return Path.home() / "Desktop"
+
+
+def safe_filepath(directory, filename):
+    path = Path(directory) / filename
+    if not path.exists():
+        return str(path)
+    stem = path.stem
+    suffix = path.suffix
+    counter = 1
+    while True:
+        new_path = path.parent / f"{stem} ({counter}){suffix}"
+        if not new_path.exists():
+            return str(new_path)
+        counter += 1
+
+
+class SaveFileRequest(BaseModel):
+    content: str
+    filename: str
+    directory: str = ""
+
+
+@app.post("/ai/save_file")
+async def ai_save_file(req: SaveFileRequest):
+    try:
+        dest_dir = Path(req.directory) if req.directory else get_desktop_path()
+        dest_dir = dest_dir.resolve()
+        if not dest_dir.exists():
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        final_path = safe_filepath(dest_dir, req.filename)
+        with open(final_path, "w", encoding="utf-8") as f:
+            f.write(req.content)
+        print(f"[CmdQ] Saved file: {final_path}")
+        return {"status": "success", "path": final_path}
+    except Exception as e:
+        print(f"[CmdQ][save_file] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
 
 @app.get("/storage/{key}")
 async def get_storage_items(key: str):
