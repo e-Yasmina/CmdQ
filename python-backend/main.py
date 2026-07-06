@@ -1545,6 +1545,7 @@ async def import_table(
     table_name: str = Form(...),
     format: str = Form(...)
 ):
+    session = None
     try:
         safe_schema = validate_identifier(schema_name, "schema name")
         safe_table = validate_identifier(table_name, "table name")
@@ -1557,7 +1558,10 @@ async def import_table(
             user=cfg.user, password=cfg.password, dbname=cfg.database
         )
         
+        content = await file.read()
+        content_str = content.decode("utf-8")
         inserted = 0
+        
         if format == "csv":
             reader = csv.DictReader(io.StringIO(content_str))
             for row in reader:
@@ -1580,17 +1584,6 @@ async def import_table(
                 q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
                 session.execute(text(q), dict(row))
                 inserted += 1
-
-        elif format == "json":
-            data_arr = json.loads(content_str)
-            for row in data_arr:
-                cols = list(row.keys())
-                val_plh = ", ".join([f":{k}" for k in cols])
-                col_str = ", ".join([f'"{k}"' if cfg.db_type == 'postgres' else f"`{k}`" for k in cols])
-                tbl_path = f'"{schema_name}"."{table_name}"' if cfg.db_type == 'postgres' else f"`{schema_name}`.`{table_name}`"
-                q = f"INSERT INTO {tbl_path} ({col_str}) VALUES ({val_plh})"
-                session.execute(text(q), row)
-                inserted += 1
                 
         elif format == "sql":
             for stmt in content_str.split(';'):
@@ -1599,11 +1592,15 @@ async def import_table(
                     inserted += 1
         else:
              raise Exception("Unsupported format")
-             
+              
         session.commit()
         session.close()
+        session = None
         return {"status": "success", "message": f"Successfully imported data. Processed {inserted} items."}
     except Exception as e:
+        if session:
+            session.rollback()
+            session.close()
         return {"status": "error", "message": f"Table Import Failed: {mask_password(str(e))}"}
 
 @app.post("/import/database")
@@ -1727,6 +1724,8 @@ async def import_database(
 @app.post("/etl/migrate")
 async def etl_migrate(req: DataMigrationRequest):
     """Extracts, transforms, and loads data mapping seamlessly between databases."""
+    src_session = None
+    tgt_session = None
     try:
         src_schema_name = validate_identifier(req.source_schema or "public", "source schema name") if req.source_schema else ""
         src_table_name = validate_identifier(req.source_table, "source table name")
@@ -1750,6 +1749,7 @@ async def etl_migrate(req: DataMigrationRequest):
             for row in src_res.fetchall():
                 src_data.append(dict(zip(keys, row)))
         src_session.close()
+        src_session = None
 
         # Transform
         transformed_data = []
@@ -1817,9 +1817,15 @@ async def etl_migrate(req: DataMigrationRequest):
             
         tgt_session.commit()
         tgt_session.close()
+        tgt_session = None
         
         return {"status": "success", "message": f"Successfully migrated {inserted} rows."}
     except Exception as e:
+        if tgt_session:
+            tgt_session.rollback()
+            tgt_session.close()
+        if src_session:
+            src_session.close()
         return {"status": "error", "message": f"Data Migration Failed: {mask_password(str(e))}"}
 
 
