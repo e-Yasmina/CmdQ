@@ -35,7 +35,8 @@ from models import (
     CLILaunchDetails, TranslateRequest, ExportTableRequest, ExportDatabaseRequest,
 )
 from cli_client import (
-    get_registered_models, save_registered_models, resolve_and_validate_command,
+    get_registered_models, save_registered_models, update_registered_models,
+    resolve_and_validate_command,
     invoke_llm_simple, invoke_llm_structured, _run_subprocess_with_files,
 )
 from cli_constants import (
@@ -43,6 +44,23 @@ from cli_constants import (
     CLI_ERR_PATH_NOT_FOUND, CLI_ERR_TIMEOUT, CLI_ERR_EMPTY_OUTPUT, CLI_ERR_GENERIC,
 )
 from secret_utils import mask_password
+
+
+def _upsert_model(models, payload):
+    for existing in models:
+        if existing["id"] == payload["id"]:
+            existing.update(payload)
+            return models
+    models.append(payload)
+    return models
+
+
+def _delete_model(models, model_id):
+    before = len(models)
+    models[:] = [m for m in models if m["id"] != model_id]
+    if len(models) == before:
+        return None
+    return models
 
 # Configure logging
 logging.basicConfig(
@@ -437,24 +455,22 @@ async def list_registered_models():
 
 @app.post("/ai/register_api_model")
 async def register_api_model(m: RegisterAPIModel):
-    models = get_registered_models()
-    for existing in models:
-        if existing["id"] == m.id:
-            existing.update(m.model_dump())
-            save_registered_models(models)
-            return {"status": "success", "message": "Updated registered API Model."}
-            
-    models.append(m.model_dump())
-    save_registered_models(models)
-    return {"status": "success", "message": "Registered new API Model."}
+    updated = update_registered_models(
+        lambda models: _upsert_model(models, m.model_dump())
+    )
+    if updated:
+        return {"status": "success", "message": "Registered/updated API Model."}
+    return {"status": "error", "message": "Failed to register API model (lock timeout)."}
 
 @app.delete("/ai/register_api_model/{model_id}")
 async def delete_registered_model(model_id: str):
-    models = get_registered_models()
-    updated = [m for m in models if m["id"] != model_id]
-    if len(updated) == len(models):
+    deleted = update_registered_models(
+        lambda models: _delete_model(models, model_id)
+    )
+    if deleted is None:
         return {"status": "error", "message": f"Model with id '{model_id}' not found."}
-    save_registered_models(updated)
+    if not deleted:
+        return {"status": "error", "message": "Failed to delete model (lock timeout)."}
     return {"status": "success", "message": f"Deleted registered API Model '{model_id}'."}
 
 

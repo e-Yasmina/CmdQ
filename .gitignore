@@ -11,6 +11,8 @@ node_modules/
 dist/
 dist-ssr/
 build/
+docs/
+RACE_CONDITION_FIX.md
 *.local
 .env
 .env.development.local

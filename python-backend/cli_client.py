@@ -4,6 +4,8 @@ import shutil
 import json
 import tempfile
 import platform
+import logging
+import portalocker
 
 
 MODELS_FILE = "registered_models.json"
@@ -19,14 +21,19 @@ def _is_encrypted(value: str) -> bool:
 def get_registered_models():
     if os.path.exists(MODELS_FILE):
         try:
-            with open(MODELS_FILE, "r", encoding="utf-8") as f:
+            with portalocker.Lock(MODELS_FILE, mode='r', encoding='utf-8',
+                                 flags=portalocker.LOCK_SH | portalocker.LOCK_NB,
+                                 timeout=5) as f:
                 models = json.load(f)
             for m in models:
                 raw = m.get("api_key", "")
                 if raw and _is_encrypted(raw):
                     m["api_key"] = decrypt_api_key(raw)
             return models
-        except:
+        except portalocker.LockException:
+            logging.error("Could not acquire shared lock on registered_models.json")
+            return []
+        except Exception:
             pass
     return []
 
@@ -36,8 +43,45 @@ def save_registered_models(models):
         raw = m.get("api_key", "")
         if raw and not _is_encrypted(raw):
             m["api_key"] = encrypt_api_key(raw)
-    with open(MODELS_FILE, "w", encoding="utf-8") as f:
-        json.dump(models, f, indent=4)
+    try:
+        with portalocker.Lock(MODELS_FILE, mode='w', encoding='utf-8',
+                             flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+                             timeout=5) as f:
+            json.dump(models, f, indent=4)
+    except portalocker.LockException:
+        logging.error("Could not acquire exclusive lock on registered_models.json")
+
+
+def update_registered_models(updater):
+    """Atomically read, update, and write registered_models.json.
+
+    The updater callable receives a list of model dicts and must return
+    the updated list (or None to abort / keep current data).
+    """
+    try:
+        with portalocker.Lock(MODELS_FILE, mode='a+', encoding='utf-8',
+                             flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+                             timeout=5) as f:
+            f.seek(0)
+            try:
+                models = json.load(f)
+            except json.JSONDecodeError:
+                models = []
+            result = updater(models)
+            if result is not None:
+                models = result
+                f.seek(0)
+                f.truncate()
+                for m in models:
+                    raw = m.get("api_key", "")
+                    if raw and not _is_encrypted(raw):
+                        m["api_key"] = encrypt_api_key(raw)
+                json.dump(models, f, indent=4)
+                return True
+            return False
+    except portalocker.LockException:
+        logging.error("Could not acquire exclusive lock on registered_models.json")
+        return False
 
 
 def resolve_and_validate_command(cmd):
