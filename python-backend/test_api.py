@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock, ANY
 from fastapi.testclient import TestClient
 import main
 import cli_client
+import persistence_manager
 from main import app
 
 client = TestClient(app)
@@ -40,11 +41,11 @@ def isolate_file_storage(monkeypatch):
     monkeypatch.setattr(cli_client, "MODELS_FILE", str(models_file))
 
     storage_files = {}
-    for key in main.storage.files:
+    for key in persistence_manager.storage.files:
         file_path = test_dir / f"{key}.json"
         file_path.write_text("[]", encoding="utf-8")
         storage_files[key] = str(file_path)
-    monkeypatch.setattr(main.storage, "files", storage_files)
+    monkeypatch.setattr(persistence_manager.storage, "files", storage_files)
 
     yield
 
@@ -52,56 +53,85 @@ def isolate_file_storage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_db_connection():
-    """Mocks get_db_connection at main level (imported at module top)."""
-    with patch("main.get_db_connection") as mock:
-        mock_session = MagicMock()
-        mock_result = MagicMock()
-        mock_result.returns_rows = True
-        mock_result.keys.return_value = ["id", "name"]
-        mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
-        mock_session.execute.return_value = mock_result
-        mock.return_value = mock_session
-        yield mock
+    """Mocks get_db_connection in all route modules that import it."""
+    patchers = [
+        patch("routes.connection.get_db_connection"),
+        patch("routes.query.get_db_connection"),
+        patch("routes.analysis.get_db_connection"),
+        patch("routes.export.get_db_connection"),
+        patch("routes.import_routes.get_db_connection"),
+        patch("routes.etl.get_db_connection"),
+    ]
+    mocks = [p.start() for p in patchers]
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_result.returns_rows = True
+    mock_result.keys.return_value = ["id", "name"]
+    mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+    mock_session.execute.return_value = mock_result
+    for m in mocks:
+        m.return_value = mock_session
+    yield mocks[0]
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture(autouse=True)
 def mock_extract_schema():
-    """Mocks extract_schema at main level (imported at module top)."""
-    with patch("main.extract_schema") as mock:
-        mock.return_value = {
-            "public": {
-                "users": {
-                    "columns": [{"name": "id", "type": "integer"}, {"name": "name", "type": "text"}],
-                    "primary_key": ["id"]
-                }
+    """Mocks extract_schema in route modules that import it."""
+    patchers = [
+        patch("routes.connection.extract_schema"),
+        patch("routes.ai.extract_schema"),
+    ]
+    mocks = [p.start() for p in patchers]
+    mock_schema = {
+        "public": {
+            "users": {
+                "columns": [{"name": "id", "type": "integer"}, {"name": "name", "type": "text"}],
+                "primary_key": ["id"]
             }
         }
-        yield mock
+    }
+    for m in mocks:
+        m.return_value = mock_schema
+    yield mocks[0]
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture
 def mock_engine():
-    """Patches create_engine at both main and sqlalchemy level."""
+    """Patches create_engine at all route modules and source level."""
     mock_conn = MagicMock()
     mock_result = MagicMock()
     mock_result.returns_rows = True
     mock_result.keys.return_value = ["id", "name"]
     mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+    mock_result.rowcount = 2
     mock_conn.execute.return_value = mock_result
     mock_conn.begin.return_value.__enter__.return_value = mock_conn
     mock_engine_instance = MagicMock()
     mock_engine_instance.begin.return_value.__enter__.return_value = mock_conn
     mock_engine_instance.connect.return_value.__enter__.return_value = mock_conn
 
-    with patch("main.create_engine", return_value=mock_engine_instance), \
-         patch("sqlalchemy.create_engine", return_value=mock_engine_instance):
-        yield
+    patchers = [
+        patch("routes.connection.create_engine", return_value=mock_engine_instance),
+        patch("routes.query.create_engine", return_value=mock_engine_instance),
+        patch("routes.ai.create_engine", return_value=mock_engine_instance),
+        patch("routes.import_routes.create_engine", return_value=mock_engine_instance),
+        patch("helpers.create_engine", return_value=mock_engine_instance),
+        patch("sqlalchemy.create_engine", return_value=mock_engine_instance),
+    ]
+    mocks = [p.start() for p in patchers]
+    yield
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture
 def mock_subprocess_gemini():
-    """Mocks _run_subprocess_with_files in main for the gemini branch."""
-    with patch("main._run_subprocess_with_files") as mock_run:
+    """Mocks _run_subprocess_with_files in the ai route module."""
+    with patch("routes.ai._run_subprocess_with_files") as mock_run:
         mock_run.return_value = ("Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone.", "")
         yield mock_run
 
@@ -145,7 +175,7 @@ def mock_agent():
 @pytest.fixture
 def mock_no_models():
     """Ensures get_registered_models returns empty list (forces CLI path)."""
-    with patch("main.get_registered_models", return_value=[]):
+    with patch("routes.ai.get_registered_models", return_value=[]):
         yield
 
 
@@ -160,7 +190,7 @@ def mock_models():
         "api_key": "sk-test",
         "base_url": ""
     }
-    with patch("main.get_registered_models", return_value=[model]):
+    with patch("routes.ai.get_registered_models", return_value=[model]):
         yield
 
 
@@ -175,7 +205,7 @@ def mock_llm_client():
 @pytest.fixture(autouse=True)
 def mock_shutil_which():
     """Mocks shutil.which to control CLI detection."""
-    with patch("main.shutil.which") as mock:
+    with patch("routes.ai.shutil.which") as mock:
         mock.return_value = None
         yield mock
 
@@ -449,7 +479,6 @@ class TestRegisteredModelsEndpoints:
         body = resp.json()
         assert body["status"] == "success"
 
-        # Verify it's gone
         resp = client.get("/ai/registered_models")
         assert len(resp.json()["models"]) == 0
 
@@ -467,7 +496,7 @@ class TestRegisteredModelsEndpoints:
 class TestLaunchCli:
     def test_returns_success(self, db_config):
         """launch_cli always returns success as it spawns the command."""
-        with patch("main.subprocess.Popen"):
+        with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_cli", json={
                 "command": "gemini",
                 "db_config": db_config
@@ -483,7 +512,7 @@ class TestLaunchCli:
 
 class TestLaunchDebug:
     def test_returns_success(self, db_config):
-        with patch("main.subprocess.Popen"):
+        with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_debug", json={
                 "command": "gemini",
                 "db_config": db_config
@@ -547,13 +576,10 @@ class TestAnalyzeEndpoints:
 # ===========================================================================
 
 class TestTranslateTable:
-    def test_valid_request(self, db_config):
+    def test_valid_request(self, db_config, mock_which):
         """Translate expects subprocess to return valid JSON."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = '[{"id": 1, "name": "Alice"}]'
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ('[{"id": 1, "name": "Alice"}]', "")
             resp = client.post("/ai/translate_table", json={
                 "command": "gemini",
                 "table_data": [{"id": 1, "name": "Alice"}]
@@ -823,7 +849,6 @@ class TestImport:
             data={"format": "xyz"}
         )
         body = resp.json()
-        # The endpoint may succeed (treating it as a generic file) or fail
         assert "status" in body
 
     def test_import_table_missing_file(self, db_config):
