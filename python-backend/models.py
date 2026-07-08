@@ -44,38 +44,24 @@ class AIPrompt(BaseModel):
     action: str = ""
 
 
-class SecurityAnalysisRequest(BaseModel):
+class AnalysisRequest(BaseModel):
     db_config: ConnectionDetails
     schema_name: str = ""
     table_name: str = ""
     command: str = ""
 
 
-class PerformanceAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
+# Backward-compat aliases
+SecurityAnalysisRequest = AnalysisRequest
+PerformanceAnalysisRequest = AnalysisRequest
+DataAnalysisRequest = AnalysisRequest
+SummaryAnalysisRequest = AnalysisRequest
 
 
 class ProtectionAnalysisRequest(BaseModel):
     db_config: ConnectionDetails
     schema_name: str
     table_name: str
-
-
-class DataAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
-
-
-class SummaryAnalysisRequest(BaseModel):
-    db_config: ConnectionDetails
-    schema_name: str = ""
-    table_name: str = ""
-    command: str = ""
 
 
 class FieldMapping(BaseModel):
