@@ -4,7 +4,8 @@ from typing import Any
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from sqlalchemy import text, create_engine
+
+from sql_executor import SqlExecutor
 
 
 def create_sql_agent(
@@ -29,22 +30,20 @@ def create_sql_agent(
             if p_bare.lower() in query.lower():
                 return f"BLOCKED BY SAFETY SYSTEM: '{p_bare}' is protected."
 
-        url = db_config.build_url(driver="psycopg2" if db_config.db_type == "postgres" else "mysqlconnector")
-
         from secret_utils import mask_password
 
         try:
-            engine = create_engine(url)
-            with engine.begin() as conn:
-                for ctx_cmd in session_context:
-                    if ctx_cmd.strip():
-                        conn.execute(text(ctx_cmd))
-                result = conn.execute(text(query))
-                if result.returns_rows:
-                    rows = result.fetchmany(5000)
-                    keys = list(result.keys())
-                    return json.dumps([dict(zip(keys, row)) for row in rows], default=str)
-                return "Query executed successfully (no rows returned)."
+            executor = SqlExecutor(db_config)
+            sql_result = executor.execute(
+                query,
+                session_context=session_context,
+                max_rows=5000,
+            )
+            if sql_result.is_error:
+                return f"SQL Error: {mask_password(sql_result.error)}"
+            if sql_result.returns_rows:
+                return json.dumps(sql_result.rows, default=str)
+            return "Query executed successfully (no rows returned)."
         except MemoryError:
             return "SQL Error: Result set too large. Add a LIMIT clause to your query."
         except Exception as e:

@@ -8,7 +8,8 @@ import traceback
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import text, create_engine
+
+from sql_executor import SqlExecutor
 
 from cli_client import (
     get_registered_models, update_registered_models,
@@ -355,15 +356,12 @@ async def ai_prompt(payload: AIPrompt):
                     if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
                         execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."}]
                     else:
-                        url = cfg.build_url(driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector")
-                        engine = create_engine(url)
-                        try:
-                            with engine.begin() as conn:
-                                rp = conn.execute(text(extracted_sql))
-                                if rp.returns_rows:
-                                    execution_results = [dict(zip(rp.keys(), row)) for row in rp.fetchall()]
-                        except Exception as sql_err:
-                            execution_results = [{"error": mask_password(str(sql_err))}]
+                        executor = SqlExecutor(cfg)
+                        sql_result = executor.execute(extracted_sql)
+                        if sql_result.is_error:
+                            execution_results = [{"error": mask_password(sql_result.error)}]
+                        else:
+                            execution_results = sql_result.rows if sql_result.returns_rows else []
             except subprocess.TimeoutExpired:
                 output = "CLI process timed out after 300 seconds."
             except Exception as cli_err:

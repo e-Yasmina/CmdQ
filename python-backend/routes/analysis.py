@@ -16,6 +16,182 @@ router = APIRouter()
 AnalysisCollector = Callable[[Any, Any, AnalysisRequest, Dict], None]
 AnalysisPromptBuilder = Callable[[str], str]
 
+# ── MetricsCollector — reusable metric queries ────────────────────────────
+
+class MetricsCollector:
+    """Reusable metric-gathering methods for database analysis.
+
+    Handles Postgres/MySQL branching internally. Each method returns None
+    on query failure, letting callers decide how to handle missing data.
+    """
+
+    def __init__(self, session, db_type: str):
+        self.session = session
+        self.db_type = db_type
+        self.is_pg = db_type == "postgres"
+
+    def _one(self, query: str, params: dict = None):
+        try:
+            return self.session.execute(text(query), params or {}).fetchone()
+        except Exception:
+            return None
+
+    def _all(self, query: str, params: dict = None):
+        try:
+            return self.session.execute(text(query), params or {}).fetchall()
+        except Exception:
+            return []
+
+    # ── Individual metric methods ──────────────────────────────────────
+
+    def table_columns(self, table_name: str, schema_name: str = None):
+        """List of (column_name, data_type, is_nullable, column_default [, column_key])."""
+        if self.is_pg:
+            q = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = :t AND table_schema = :s"
+            return self._all(q, {"t": table_name, "s": schema_name or "public"})
+        q = "SELECT column_name, data_type, is_nullable, column_default, column_key FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE()"
+        return self._all(q, {"t": table_name})
+
+    def table_size(self, table_name: str, schema_name: str = None):
+        """Return (total_bytes, data_bytes, index_bytes) or None."""
+        if self.is_pg:
+            q = "SELECT pg_total_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as total, pg_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as data"
+            row = self._one(q, {"s": schema_name or "public", "t": table_name})
+            return (row[0], row[1], row[0] - row[1]) if row else None
+        q = "SELECT data_length, index_length, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t"
+        row = self._one(q, {"t": table_name})
+        return (row[0] + row[1], row[0], row[1]) if row else None
+
+    def table_scan_stats(self, table_name: str, schema_name: str = None):
+        """Postgres-only: (seq_scan, seq_tup_read, idx_scan, idx_tup_fetch) or None."""
+        if not self.is_pg:
+            return None
+        return self._one(
+            "SELECT seq_scan, seq_tup_read, idx_scan, idx_tup_fetch FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t",
+            {"s": schema_name or "public", "t": table_name},
+        )
+
+    def table_activity(self, table_name: str, schema_name: str = None):
+        """Postgres-only: (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup) or None."""
+        if not self.is_pg:
+            return None
+        return self._one(
+            "SELECT n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t",
+            {"s": schema_name or "public", "t": table_name},
+        )
+
+    def total_rows(self, table_name: str, schema_name: str = None):
+        """Approximate row count for a table."""
+        if self.is_pg:
+            row = self._one(
+                "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t",
+                {"s": schema_name or "public", "t": table_name},
+            )
+            return row[0] if row else None
+        row = self._one(
+            "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t",
+            {"t": table_name},
+        )
+        return row[0] if row else None
+
+    def table_count(self):
+        """Total number of user tables in the database."""
+        if self.is_pg:
+            row = self._one("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog')")
+        else:
+            row = self._one("SELECT count(*) FROM information_schema.tables WHERE table_schema = DATABASE()")
+        return row[0] if row else 0
+
+    def largest_tables(self, limit: int = 10):
+        """Largest tables by row count."""
+        if self.is_pg:
+            rows = self._all("SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC LIMIT :limit", {"limit": limit})
+        else:
+            rows = self._all("SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_rows DESC LIMIT :limit", {"limit": limit})
+        return [{"name": str(r[0]), "rows": int(r[1] or 0)} for r in rows] if rows else []
+
+    def database_size(self, database_name: str):
+        """Total database size in bytes."""
+        if self.is_pg:
+            row = self._one("SELECT pg_database_size(:d)", {"d": database_name})
+            return row[0] if row else 0
+        row = self._one("SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = DATABASE()")
+        return row[0] if row and row[0] is not None else 0
+
+    def database_stats(self, database_name: str):
+        """pg_stat_database aggregate (blks_hit, blks_read, xact_commit, xact_rollback, conflicts, deadlocks)."""
+        if not self.is_pg:
+            return None
+        return self._one(
+            "SELECT blks_hit, blks_read, xact_commit, xact_rollback, conflicts, deadlocks FROM pg_stat_database WHERE datname = :d",
+            {"d": database_name},
+        )
+
+    def active_connections(self, database_name: str):
+        """(total_connections, active_queries) for the database."""
+        if self.is_pg:
+            row = self._one(
+                "SELECT count(*) as active, sum(case when state = 'active' then 1 else 0 end) as executing FROM pg_stat_activity WHERE datname = :d",
+                {"d": database_name},
+            )
+            return (row[0] or 0, row[1] or 0) if row else (0, 0)
+        threads = self._one("SHOW GLOBAL STATUS LIKE 'Threads_connected'")
+        running = self._one("SHOW GLOBAL STATUS LIKE 'Threads_running'")
+        return (int(threads[1]) if threads else 0, int(running[1]) if running else 0)
+
+    def max_connections(self):
+        """max_connections configuration value."""
+        if self.is_pg:
+            row = self._one("SHOW max_connections")
+            return int(row[0]) if row else 100
+        row = self._one("SHOW VARIABLES LIKE 'max_connections'")
+        return int(row[1]) if row else 151
+
+    def table_grants(self, table_name: str):
+        """Postgres-only: list of {grantee, privilege}."""
+        if not self.is_pg:
+            return []
+        rows = self._all("SELECT grantee, privilege_type FROM information_schema.role_table_grants WHERE table_name = :t", {"t": table_name})
+        return [{"grantee": r[0], "privilege": r[1]} for r in rows] if rows else []
+
+    def table_constraints(self, table_name: str, schema_name: str = None):
+        """List of {name, type} for the table."""
+        if self.is_pg:
+            rows = self._all("SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :t", {"t": table_name})
+        else:
+            rows = self._all("SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :t AND table_schema = DATABASE()", {"t": table_name})
+        return [{"name": r[0], "type": r[1]} for r in rows] if rows else []
+
+    def user_roles(self):
+        """Database users: {admins: list[str], total_users: int} or None."""
+        if self.is_pg:
+            rows = self._all("SELECT rolname, rolsuper FROM pg_roles")
+            if rows:
+                admins = [str(r[0]) for r in rows if r[1] is True]
+                return {"admins": admins, "total_users": len(rows)}
+            return None
+        rows = self._all("SELECT user, Super_priv FROM mysql.user")
+        if rows:
+            admins = [str(r[0]) for r in rows if r[1] == 'Y']
+            return {"admins": admins, "total_users": len(rows)}
+        return None
+
+    def primary_keys(self, table_name: str, schema_name: str = None):
+        """List of primary key column names."""
+        if self.is_pg:
+            q = """
+                SELECT a.attname
+                FROM pg_index i
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE i.indrelid = (quote_ident(:s) || '.' || quote_ident(:t))::regclass
+                AND i.indisprimary
+            """
+            rows = self._all(q, {"s": schema_name or "public", "t": table_name})
+            return [str(r[0]) for r in rows] if rows else []
+        cols = self.table_columns(table_name, schema_name)
+        return [str(r[0]) for r in cols if len(r) > 4 and r[4] == 'PRI'] if cols else []
+
+
 # ── Shared analysis pipeline ──────────────────────────────────────────────
 
 async def _run_analysis(req: AnalysisRequest, analysis_type: str,
@@ -61,54 +237,25 @@ SECURITY_SENSITIVE_KEYWORDS = ['pass', 'token', 'secret', 'email', 'ssn', 'key',
 
 
 def _collect_security(session, cfg, req, metrics):
+    collector = MetricsCollector(session, cfg.db_type)
     if req.table_name:
-        if cfg.db_type == "postgres":
-            grants_q = "SELECT grantee, privilege_type FROM information_schema.role_table_grants WHERE table_name = :table_name;"
-            grants_res = session.execute(text(grants_q), {"table_name": req.table_name}).fetchall()
-            metrics["permissions"] = [{"grantee": r[0], "privilege": r[1]} for r in grants_res]
-            cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :table_name;"
-            cols_res = session.execute(text(cols_q), {"table_name": req.table_name}).fetchall()
-            sensitive_cols = []
-            for r in cols_res:
-                col = str(r[0]).lower()
-                if any(kw in col for kw in SECURITY_SENSITIVE_KEYWORDS):
-                    sensitive_cols.append({"column": r[0], "type": r[1]})
-            metrics["sensitive_columns"] = sensitive_cols
-            metrics["total_columns"] = len(cols_res)
-            constr_q = "SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :table_name;"
-            constr_res = session.execute(text(constr_q), {"table_name": req.table_name}).fetchall()
-            metrics["constraints"] = [{"name": r[0], "type": r[1]} for r in constr_res]
-        else:
-            cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :table_name AND table_schema = DATABASE();"
-            cols_res = session.execute(text(cols_q), {"table_name": req.table_name}).fetchall()
-            sensitive_cols = []
-            for r in cols_res:
-                col = str(r[0]).lower()
-                if any(kw in col for kw in SECURITY_SENSITIVE_KEYWORDS):
-                    sensitive_cols.append({"column": r[0], "type": r[1]})
-            metrics["sensitive_columns"] = sensitive_cols
-            metrics["total_columns"] = len(cols_res)
-            constr_q = "SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = :table_name AND table_schema = DATABASE();"
-            constr_res = session.execute(text(constr_q), {"table_name": req.table_name}).fetchall()
-            metrics["constraints"] = [{"name": r[0], "type": r[1]} for r in constr_res]
-            metrics["permissions"] = []
+        cols = collector.table_columns(req.table_name, req.schema_name)
+        sensitive_cols = []
+        for r in cols:
+            col = str(r[0]).lower()
+            if any(kw in col for kw in SECURITY_SENSITIVE_KEYWORDS):
+                sensitive_cols.append({"column": r[0], "type": r[1]})
+        metrics["sensitive_columns"] = sensitive_cols
+        metrics["total_columns"] = len(cols)
+        metrics["constraints"] = collector.table_constraints(req.table_name, req.schema_name)
+        metrics["permissions"] = collector.table_grants(req.table_name)
     else:
-        if cfg.db_type == "postgres":
-            roles_q = "SELECT rolname, rolsuper FROM pg_roles;"
-            try:
-                roles_res = session.execute(text(roles_q)).fetchall()
-                metrics["admins"] = [str(r[0]) for r in roles_res if r[1] is True]
-                metrics["total_users"] = len(roles_res)
-            except Exception as e:
-                metrics["permissions_error"] = mask_password(str(e))
+        roles = collector.user_roles()
+        if roles:
+            metrics["admins"] = roles["admins"]
+            metrics["total_users"] = roles["total_users"]
         else:
-            roles_q = "SELECT user, Super_priv FROM mysql.user;"
-            try:
-                roles_res = session.execute(text(roles_q)).fetchall()
-                metrics["admins"] = [str(r[0]) for r in roles_res if r[1] == 'Y']
-                metrics["total_users"] = len(roles_res)
-            except Exception as e:
-                metrics["permissions_error"] = mask_password(str(e))
+            metrics["permissions_error"] = "Could not query user roles."
 
 
 def _build_prompt_security(raw_json: str) -> str:
@@ -130,103 +277,75 @@ async def analyze_security(req: AnalysisRequest):
 # ── Performance ───────────────────────────────────────────────────────────
 
 def _collect_performance(session, cfg, req, metrics):
+    collector = MetricsCollector(session, cfg.db_type)
     if req.table_name:
+        size = collector.table_size(req.table_name, req.schema_name)
+        if size:
+            metrics["total_size_bytes"], metrics["table_size_bytes"], metrics["index_size_bytes"] = size
+        elif collector.is_pg:
+            metrics["size_error"] = "Could not retrieve table size."
+
         if cfg.db_type == "postgres":
-            schema_name = req.schema_name or "public"
-            size_q = "SELECT pg_total_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as total_size, pg_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as table_size;"
-            try:
-                size_res = session.execute(text(size_q), {"s": schema_name, "t": req.table_name}).fetchone()
-                metrics["total_size_bytes"] = size_res[0] if size_res else 0
-                metrics["table_size_bytes"] = size_res[1] if size_res else 0
-                metrics["index_size_bytes"] = metrics["total_size_bytes"] - metrics["table_size_bytes"]
-            except Exception as e:
-                metrics["size_error"] = mask_password(str(e))
-            scan_q = "SELECT seq_scan, seq_tup_read, idx_scan, idx_tup_fetch FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
-            try:
-                scan_res = session.execute(text(scan_q), {"s": schema_name, "t": req.table_name}).fetchone()
-                if scan_res:
-                    metrics["seq_scans"] = scan_res[0]
-                    metrics["idx_scans"] = scan_res[2]
-                    total_scans = (scan_res[0] or 0) + (scan_res[2] or 0)
-                    metrics["idx_scan_ratio"] = (scan_res[2] / total_scans) if total_scans > 0 else 0
-                else:
-                    metrics["seq_scans"] = metrics.get("idx_scans", 0)
-                    metrics["seq_scans"] = 0
-                    metrics["idx_scan_ratio"] = 0
-            except Exception:
-                pass
-            act_q = "SELECT n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
-            try:
-                act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
-                if act_res:
-                    metrics["inserts"] = act_res[0]
-                    metrics["updates"] = act_res[1]
-                    metrics["deletes"] = act_res[2]
-                    metrics["live_rows"] = act_res[3]
-                    metrics["dead_rows"] = act_res[4]
-                    metrics["bloat_ratio"] = (act_res[4] / (act_res[3] + act_res[4])) if (act_res[3] + act_res[4]) > 0 else 0
-            except Exception:
-                pass
-        else:
-            size_q = "SELECT data_length, index_length, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
-            try:
-                size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
-                if size_res:
-                    metrics["table_size_bytes"] = size_res[0]
-                    metrics["index_size_bytes"] = size_res[1]
-                    metrics["total_size_bytes"] = size_res[0] + size_res[1]
-                    metrics["live_rows"] = size_res[2]
-            except Exception:
-                pass
+            scan = collector.table_scan_stats(req.table_name, req.schema_name)
+            if scan:
+                metrics["seq_scans"] = scan[0]
+                metrics["idx_scans"] = scan[2]
+                total_scans = (scan[0] or 0) + (scan[2] or 0)
+                metrics["idx_scan_ratio"] = (scan[2] / total_scans) if total_scans > 0 else 0
+            else:
+                metrics["seq_scans"] = 0
+                metrics["idx_scan_ratio"] = 0
+
+            act = collector.table_activity(req.table_name, req.schema_name)
+            if act:
+                metrics["inserts"] = act[0]
+                metrics["updates"] = act[1]
+                metrics["deletes"] = act[2]
+                metrics["live_rows"] = act[3]
+                metrics["dead_rows"] = act[4]
+                metrics["bloat_ratio"] = (act[4] / (act[3] + act[4])) if (act[3] + act[4]) > 0 else 0
+
+        rows = collector.total_rows(req.table_name, req.schema_name)
+        if rows is not None:
+            metrics["live_rows"] = rows
     else:
         if cfg.db_type == "postgres":
-            db_stat_q = "SELECT blks_hit, blks_read, xact_commit, xact_rollback, conflicts, deadlocks FROM pg_stat_database WHERE datname = :d;"
-            try:
-                db_stat_res = session.execute(text(db_stat_q), {"d": cfg.database}).fetchone()
-                if db_stat_res:
-                    hits = db_stat_res[0] or 0
-                    reads = db_stat_res[1] or 0
-                    metrics["cache_hits"] = hits
-                    metrics["disk_reads"] = reads
-                    metrics["cache_hit_ratio"] = hits / (hits + reads) if (hits + reads) > 0 else 0
-                    metrics["commits"] = db_stat_res[2]
-                    metrics["rollbacks"] = db_stat_res[3]
-                    metrics["conflicts"] = db_stat_res[4]
-                    metrics["deadlocks"] = db_stat_res[5]
-            except Exception as e:
-                metrics["stat_error"] = mask_password(str(e))
-            conn_q = "SELECT count(*) as active, sum(case when state = 'active' then 1 else 0 end) as executing FROM pg_stat_activity WHERE datname = :d;"
-            try:
-                conn_res = session.execute(text(conn_q), {"d": cfg.database}).fetchone()
-                if conn_res:
-                    metrics["total_connections"] = conn_res[0]
-                    metrics["active_queries"] = conn_res[1] or 0
-            except Exception:
-                pass
-            try:
-                max_conn_res = session.execute(text("SHOW max_connections;")).fetchone()
-                metrics["max_connections"] = int(max_conn_res[0]) if max_conn_res else 100
-            except Exception:
-                pass
+            db = collector.database_stats(cfg.database)
+            if db:
+                hits = db[0] or 0
+                reads = db[1] or 0
+                metrics["cache_hits"] = hits
+                metrics["disk_reads"] = reads
+                metrics["cache_hit_ratio"] = hits / (hits + reads) if (hits + reads) > 0 else 0
+                metrics["commits"] = db[2]
+                metrics["rollbacks"] = db[3]
+                metrics["conflicts"] = db[4]
+                metrics["deadlocks"] = db[5]
+            else:
+                metrics["stat_error"] = "Could not retrieve database stats."
         else:
             try:
-                threads_res = session.execute(text("SHOW GLOBAL STATUS LIKE 'Threads_connected';")).fetchone()
-                metrics["total_connections"] = int(threads_res[1]) if threads_res else 0
-                running_res = session.execute(text("SHOW GLOBAL STATUS LIKE 'Threads_running';")).fetchone()
-                metrics["active_queries"] = int(running_res[1]) if running_res else 0
-                max_conn_res = session.execute(text("SHOW VARIABLES LIKE 'max_connections';")).fetchone()
-                metrics["max_connections"] = int(max_conn_res[1]) if max_conn_res else 151
-                innodb_reads = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_reads';")).fetchone()
-                innodb_reqs = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_read_requests';")).fetchone()
-                if innodb_reads and innodb_reqs:
-                    reads = int(innodb_reads[1])
-                    reqs = int(innodb_reqs[1])
-                    hits = reqs - reads
+                reads = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_reads';")).fetchone()
+                reqs = session.execute(text("SHOW GLOBAL STATUS LIKE 'Innodb_buffer_pool_read_requests';")).fetchone()
+                if reads and reqs:
+                    r = int(reads[1])
+                    q = int(reqs[1])
+                    hits = q - r
                     metrics["cache_hits"] = hits
-                    metrics["disk_reads"] = reads
-                    metrics["cache_hit_ratio"] = hits / reqs if reqs > 0 else 0
+                    metrics["disk_reads"] = r
+                    metrics["cache_hit_ratio"] = hits / q if q > 0 else 0
             except Exception:
                 pass
+
+        conns = collector.active_connections(cfg.database)
+        if conns:
+            metrics["total_connections"], metrics["active_queries"] = conns
+        metrics["max_connections"] = collector.max_connections()
+
+        if not collector.is_pg:
+            size = collector.database_size(cfg.database)
+            if size:
+                metrics["database_size_bytes"] = size
 
 
 def _build_prompt_performance(raw_json: str) -> str:
@@ -248,78 +367,41 @@ async def analyze_performance(req: AnalysisRequest):
 # ── Data ──────────────────────────────────────────────────────────────────
 
 def _collect_data(session, cfg, req, metrics):
+    collector = MetricsCollector(session, cfg.db_type)
     if req.table_name:
         table_name = validate_identifier(req.table_name, "table name")
-        if cfg.db_type == "postgres":
-            schema_name = validate_identifier(req.schema_name or "public", "schema name")
-            cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"
-            cols_res = session.execute(text(cols_q), {"t": table_name}).fetchall()
-            metrics["total_columns"] = len(cols_res)
-            act_q = "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
-            act_res = session.execute(text(act_q), {"s": schema_name, "t": table_name}).fetchone()
-            total_rows = act_res[0] if act_res and act_res[0] is not None else 0
-            metrics["total_rows"] = total_rows
-            sampled_columns = cols_res[:10]
-            completeness = {}
-            if total_rows > 0:
-                for col, dtype in sampled_columns:
-                    try:
-                        c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema_name}"."{table_name}"'
-                        c_res = session.execute(text(c_q)).fetchone()
-                        if c_res:
-                            non_nulls = c_res[0]
-                            unique_vals = c_res[1]
-                            completeness[col] = {
-                                "fill_rate": non_nulls / total_rows,
-                                "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
-                                "type": dtype
-                            }
-                    except Exception:
-                        pass
-            metrics["column_stats"] = completeness
-        else:
-            size_q = "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
-            size_res = session.execute(text(size_q), {"t": table_name}).fetchone()
-            total_rows = size_res[0] if size_res and size_res[0] is not None else 0
-            metrics["total_rows"] = total_rows
-            cols_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE();"
-            cols_res = session.execute(text(cols_q), {"t": table_name}).fetchall()
-            metrics["total_columns"] = len(cols_res)
-            sampled_columns = cols_res[:10]
-            completeness = {}
-            if total_rows > 0:
-                for col, dtype in sampled_columns:
-                    try:
+        cols = collector.table_columns(req.table_name, req.schema_name)
+        metrics["total_columns"] = len(cols)
+        total_rows = collector.total_rows(req.table_name, req.schema_name) or 0
+        metrics["total_rows"] = total_rows
+
+        sampled_columns = cols[:10]
+        completeness = {}
+        if total_rows > 0:
+            schema = req.schema_name or "public"
+            for r in sampled_columns:
+                col, dtype = r[0], r[1]
+                try:
+                    if collector.is_pg:
+                        c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema}"."{table_name}"'
+                    else:
                         c_q = f"SELECT count(`{col}`) as non_nulls, count(distinct `{col}`) as unique_vals FROM `{table_name}`"
-                        c_res = session.execute(text(c_q)).fetchone()
-                        if c_res:
-                            non_nulls = c_res[0]
-                            unique_vals = c_res[1]
-                            completeness[col] = {
-                                "fill_rate": non_nulls / total_rows,
-                                "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
-                                "type": dtype
-                            }
-                    except Exception:
-                        pass
-            metrics["column_stats"] = completeness
+                    c_res = session.execute(text(c_q)).fetchone()
+                    if c_res:
+                        non_nulls = c_res[0]
+                        unique_vals = c_res[1]
+                        completeness[col] = {
+                            "fill_rate": non_nulls / total_rows,
+                            "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
+                            "type": dtype
+                        }
+                except Exception:
+                    pass
+        metrics["column_stats"] = completeness
     else:
-        if cfg.db_type == "postgres":
-            q = "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC LIMIT 10;"
-            res = session.execute(text(q)).fetchall()
-            metrics["largest_tables"] = [{"name": str(r[0]), "rows": int(r[1] or 0)} for r in res]
-            metrics["total_db_rows"] = sum(int(r[1] or 0) for r in res)
-            q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"
-            t_res = session.execute(text(q_tables)).fetchone()
-            metrics["total_tables"] = t_res[0] if t_res else 0
-        else:
-            q = "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_rows DESC LIMIT 10;"
-            res = session.execute(text(q)).fetchall()
-            metrics["largest_tables"] = [{"name": str(r[0]), "rows": int(r[1] or 0)} for r in res]
-            metrics["total_db_rows"] = sum(int(r[1] or 0) for r in res)
-            q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema = DATABASE();"
-            t_res = session.execute(text(q_tables)).fetchone()
-            metrics["total_tables"] = t_res[0] if t_res else 0
+        metrics["largest_tables"] = collector.largest_tables()
+        metrics["total_db_rows"] = sum(t["rows"] for t in metrics["largest_tables"])
+        metrics["total_tables"] = collector.table_count()
 
 
 def _build_prompt_data(raw_json: str) -> str:
@@ -341,63 +423,20 @@ async def analyze_data(req: AnalysisRequest):
 # ── Summary ───────────────────────────────────────────────────────────────
 
 def _collect_summary(session, cfg, req, metrics):
+    collector = MetricsCollector(session, cfg.db_type)
     if req.table_name:
-        if cfg.db_type == "postgres":
-            schema_name = req.schema_name or "public"
-            size_q = "SELECT pg_total_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as total_size, pg_relation_size(quote_ident(:s) || '.' || quote_ident(:t)) as table_size;"
-            try:
-                size_res = session.execute(text(size_q), {"s": schema_name, "t": req.table_name}).fetchone()
-                metrics["total_size_bytes"] = size_res[0] if size_res else 0
-            except Exception:
-                metrics["total_size_bytes"] = 0
-            act_q = "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = :s AND relname = :t;"
-            try:
-                act_res = session.execute(text(act_q), {"s": schema_name, "t": req.table_name}).fetchone()
-                metrics["approx_rows"] = act_res[0] if act_res and act_res[0] is not None else 0
-            except Exception:
-                metrics["approx_rows"] = 0
-            cols_q = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = :t AND table_schema = :s;"
-            cols_res = session.execute(text(cols_q), {"t": req.table_name, "s": schema_name}).fetchall()
-            metrics["columns"] = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "default": r[3]} for r in cols_res]
-            pk_q = '''
-            SELECT a.attname
-            FROM   pg_index i
-            JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE  i.indrelid = (quote_ident(:s) || '.' || quote_ident(:t))::regclass
-            AND    i.indisprimary;
-            '''
-            try:
-                pk_res = session.execute(text(pk_q), {"s": schema_name, "t": req.table_name}).fetchall()
-                metrics["primary_keys"] = [str(r[0]) for r in pk_res]
-            except Exception:
-                metrics["primary_keys"] = []
-        else:
-            size_q = "SELECT table_rows, data_length, index_length FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t;"
-            size_res = session.execute(text(size_q), {"t": req.table_name}).fetchone()
-            metrics["approx_rows"] = size_res[0] if size_res and size_res[0] is not None else 0
-            metrics["total_size_bytes"] = (size_res[1] or 0) + (size_res[2] or 0) if size_res else 0
-            cols_q = "SELECT column_name, data_type, is_nullable, column_default, column_key FROM information_schema.columns WHERE table_name = :t AND table_schema = DATABASE();"
-            cols_res = session.execute(text(cols_q), {"t": req.table_name}).fetchall()
-            metrics["columns"] = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "default": r[3]} for r in cols_res]
-            metrics["primary_keys"] = [str(r[0]) for r in cols_res if r[4] == 'PRI']
+        size = collector.table_size(req.table_name, req.schema_name)
+        metrics["total_size_bytes"] = size[0] if size else 0
+
+        rows = collector.total_rows(req.table_name, req.schema_name)
+        metrics["approx_rows"] = rows if rows is not None else 0
+
+        cols = collector.table_columns(req.table_name, req.schema_name)
+        metrics["columns"] = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "default": r[3]} for r in cols]
+        metrics["primary_keys"] = collector.primary_keys(req.table_name, req.schema_name)
     else:
-        if cfg.db_type == "postgres":
-            try:
-                db_size_q = "SELECT pg_database_size(:d);"
-                db_size_res = session.execute(text(db_size_q), {"d": cfg.database}).fetchone()
-                metrics["database_size_bytes"] = db_size_res[0] if db_size_res else 0
-            except Exception:
-                metrics["database_size_bytes"] = 0
-            q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"
-            t_res = session.execute(text(q_tables)).fetchone()
-            metrics["total_tables"] = t_res[0] if t_res else 0
-        else:
-            q_size = "SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = DATABASE();"
-            db_size_res = session.execute(text(q_size)).fetchone()
-            metrics["database_size_bytes"] = db_size_res[0] if db_size_res and db_size_res[0] is not None else 0
-            q_tables = "SELECT count(*) FROM information_schema.tables WHERE table_schema = DATABASE();"
-            t_res = session.execute(text(q_tables)).fetchone()
-            metrics["total_tables"] = t_res[0] if t_res else 0
+        metrics["database_size_bytes"] = collector.database_size(cfg.database)
+        metrics["total_tables"] = collector.table_count()
     metrics["db_engine"] = cfg.db_type
 
 

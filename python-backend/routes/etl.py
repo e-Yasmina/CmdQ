@@ -5,13 +5,13 @@ from database import get_db_connection
 from helpers import validate_identifier
 from models import DataMigrationRequest
 from secret_utils import mask_password
+from sql_executor import SqlExecutor
 
 router = APIRouter()
 
 
 @router.post("/etl/migrate")
 async def etl_migrate(req: DataMigrationRequest):
-    src_session = None
     tgt_session = None
     try:
         src_schema_name = validate_identifier(req.source_schema or "public", "source schema name") if req.source_schema else ""
@@ -19,23 +19,15 @@ async def etl_migrate(req: DataMigrationRequest):
         tgt_schema_name = validate_identifier(req.target_schema or "public", "target schema name") if req.target_schema else ""
         tgt_table_name = validate_identifier(req.target_table, "target table name")
 
-        src_session = get_db_connection(
-            db_type=req.source_config.db_type, host=req.source_config.host, port=req.source_config.port,
-            user=req.source_config.user, password=req.source_config.password, dbname=req.source_config.database
-        )
-
         src_schema = src_schema_name if src_schema_name else ("public" if req.source_config.db_type == "postgres" else req.source_schema or "")
         src_tbl = f'"{src_schema}"."{src_table_name}"' if req.source_config.db_type == 'postgres' else f"`{src_schema}`.`{src_table_name}`"
 
         src_query = f"SELECT * FROM {src_tbl}"
-        src_res = src_session.execute(text(src_query))
-        src_data = []
-        if src_res.returns_rows:
-            keys = src_res.keys()
-            for row in src_res.fetchall():
-                src_data.append(dict(zip(keys, row)))
-        src_session.close()
-        src_session = None
+        src_executor = SqlExecutor(req.source_config)
+        src_result = src_executor.execute(src_query)
+        if src_result.is_error:
+            return {"status": "error", "message": f"Data Migration Failed: {mask_password(src_result.error)}"}
+        src_data = src_result.rows
 
         transformed_data = []
         for src_row in src_data:
@@ -108,6 +100,4 @@ async def etl_migrate(req: DataMigrationRequest):
         if tgt_session:
             tgt_session.rollback()
             tgt_session.close()
-        if src_session:
-            src_session.close()
         return {"status": "error", "message": f"Data Migration Failed: {mask_password(str(e))}"}

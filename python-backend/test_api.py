@@ -53,14 +53,14 @@ def isolate_file_storage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_db_connection():
-    """Mocks get_db_connection in all route modules that import it."""
+    """Mocks get_db_connection and SqlExecutor engine creation in all route modules."""
     patchers = [
         patch("routes.connection.get_db_connection"),
-        patch("routes.query.get_db_connection"),
         patch("routes.analysis.get_db_connection"),
         patch("routes.export.get_db_connection"),
         patch("routes.import_routes.get_db_connection"),
         patch("routes.etl.get_db_connection"),
+        patch("sql_executor.build_engine"),
     ]
     mocks = [p.start() for p in patchers]
     mock_session = MagicMock()
@@ -68,9 +68,18 @@ def mock_db_connection():
     mock_result.returns_rows = True
     mock_result.keys.return_value = ["id", "name"]
     mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+    mock_result.rowcount = 2
     mock_session.execute.return_value = mock_result
-    for m in mocks:
+
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_result
+    mock_conn.begin.return_value.__enter__.return_value = mock_conn
+    mock_engine = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    for m in mocks[:5]:
         m.return_value = mock_session
+    mocks[5].return_value = mock_engine
     yield mocks[0]
     for p in patchers:
         p.stop()
@@ -101,7 +110,7 @@ def mock_extract_schema():
 
 @pytest.fixture
 def mock_engine():
-    """Patches create_engine at all route modules and source level."""
+    """Patches create_engine at legacy route modules and source level."""
     mock_conn = MagicMock()
     mock_result = MagicMock()
     mock_result.returns_rows = True
@@ -116,11 +125,10 @@ def mock_engine():
 
     patchers = [
         patch("routes.connection.create_engine", return_value=mock_engine_instance),
-        patch("routes.query.create_engine", return_value=mock_engine_instance),
-        patch("routes.ai.create_engine", return_value=mock_engine_instance),
         patch("routes.import_routes.create_engine", return_value=mock_engine_instance),
         patch("helpers.create_engine", return_value=mock_engine_instance),
         patch("sqlalchemy.create_engine", return_value=mock_engine_instance),
+        patch("sql_executor.build_engine", return_value=mock_engine_instance),
     ]
     mocks = [p.start() for p in patchers]
     yield

@@ -1,12 +1,11 @@
 import re
 
 from fastapi import APIRouter
-from sqlalchemy import text, create_engine
 
-from database import get_db_connection
 from helpers import validate_identifier
 from models import QueryRequest, TableDataRequest
 from secret_utils import mask_password
+from sql_executor import SqlExecutor
 
 router = APIRouter()
 
@@ -15,32 +14,22 @@ router = APIRouter()
 async def execute_query(req: QueryRequest):
     try:
         cfg = req.db_config
-        url = cfg.build_url(driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector")
-        engine = create_engine(url)
-        execution_results = []
-        with engine.begin() as conn:
-            if req.session_context:
-                for cmd in req.session_context:
-                    if cmd.strip():
-                        try:
-                            conn.execute(text(cmd))
-                        except:
-                            pass
-            result_proxy = conn.execute(text(req.query))
-            rowcount = result_proxy.rowcount if result_proxy.rowcount > 0 else 0
-            if result_proxy.returns_rows:
-                rows = result_proxy.fetchall()
-                keys = result_proxy.keys()
-                for row in rows:
-                    row_dict = {}
-                    for k, v in zip(keys, row):
-                        row_dict[k] = str(v) if v is not None else None
-                    execution_results.append(row_dict)
-            query_upper = req.query.strip().upper()
-            is_dml = query_upper.startswith("UPDATE") or query_upper.startswith("DELETE")
-            if is_dml and rowcount == 0:
-                return {"status": "warning", "data": execution_results, "rows_affected": 0, "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."}
-        return {"status": "success", "data": execution_results, "rows_affected": rowcount, "message": "Query executed successfully."}
+        executor = SqlExecutor(cfg)
+        result = executor.execute(
+            req.query,
+            session_context=req.session_context,
+        )
+        if result.is_error:
+            return {"status": "error", "message": f"Query Failed: {mask_password(result.error)}"}
+        rows = [
+            {k: str(v) if v is not None else None for k, v in row.items()}
+            for row in result.rows
+        ]
+        query_upper = req.query.strip().upper()
+        is_dml = query_upper.startswith("UPDATE") or query_upper.startswith("DELETE")
+        if is_dml and result.rowcount == 0:
+            return {"status": "warning", "data": rows, "rows_affected": 0, "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."}
+        return {"status": "success", "data": rows, "rows_affected": result.rowcount, "message": "Query executed successfully."}
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {mask_password(str(e))}"}
 
@@ -50,36 +39,23 @@ async def get_table_data(req: TableDataRequest):
     try:
         schema_name = validate_identifier(req.schema_name, "schema name")
         table_name = validate_identifier(req.table_name, "table name")
-        session = get_db_connection(
-            db_type=req.db_config.db_type,
-            host=req.db_config.host,
-            port=req.db_config.port,
-            user=req.db_config.user,
-            password=req.db_config.password,
-            dbname=req.db_config.database
-        )
-        if req.db_config.db_type == "postgres":
+        cfg = req.db_config
+        if cfg.db_type == "postgres":
             query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT :limit OFFSET :offset'
         else:
             query = f"SELECT * FROM `{schema_name}`.`{table_name}` LIMIT :limit OFFSET :offset"
-        execution_results = []
-        if req.session_context:
-            for cmd in req.session_context:
-                if cmd.strip():
-                    try:
-                        session.execute(text(cmd))
-                    except:
-                        pass
-        result_proxy = session.execute(text(query), {"limit": req.limit, "offset": req.offset})
-        if result_proxy.returns_rows:
-            rows = result_proxy.fetchall()
-            keys = result_proxy.keys()
-            for row in rows:
-                row_dict = {}
-                for k, v in zip(keys, row):
-                    row_dict[k] = str(v) if v is not None else None
-                execution_results.append(row_dict)
-        session.close()
-        return {"status": "success", "data": execution_results}
+        executor = SqlExecutor(cfg)
+        result = executor.execute(
+            query,
+            params={"limit": req.limit, "offset": req.offset},
+            session_context=req.session_context,
+        )
+        if result.is_error:
+            return {"status": "error", "message": f"Failed to fetch table data: {mask_password(result.error)}"}
+        rows = [
+            {k: str(v) if v is not None else None for k, v in row.items()}
+            for row in result.rows
+        ]
+        return {"status": "success", "data": rows}
     except Exception as e:
         return {"status": "error", "message": f"Failed to fetch table data: {mask_password(str(e))}"}
