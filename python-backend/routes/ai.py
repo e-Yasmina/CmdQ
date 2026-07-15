@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import tempfile
 import traceback
-import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +12,7 @@ from sqlalchemy import text, create_engine
 
 from cli_client import (
     get_registered_models, update_registered_models,
-    invoke_llm_simple, invoke_llm_structured, _run_subprocess_with_files,
+    invoke_llm_simple, invoke_llm_structured, resolve_llm_target, _run_subprocess_with_files,
 )
 from cli_constants import (
     ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND,
@@ -97,12 +96,7 @@ async def launch_cli(details: CLILaunchDetails):
     try:
         print(f"DEBUG: launch_cli/debug called for command: '{details.command}'")
         cfg = details.db_config
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
-        if cfg.db_type == "postgres":
-            db_url = f"postgresql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
-        else:
-            db_url = f"mysql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+        db_url = cfg.build_url()
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
         env["DB_HOST"] = cfg.host
@@ -155,13 +149,7 @@ async def ai_prompt(payload: AIPrompt):
     try:
         cfg = payload.db_config
         print(f"[CmdQ] /ai/prompt called | db: {cfg.database} | table: {payload.selected_table} | action: {payload.action} | prompt: {payload.prompt[:150]}")
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
-        db_url = ""
-        if cfg.db_type == "postgres":
-            db_url = f"postgresql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
-        else:
-            db_url = f"mysql://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+        db_url = cfg.build_url()
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
         user_prompt = payload.prompt
@@ -252,16 +240,13 @@ async def ai_prompt(payload: AIPrompt):
         )
 
         cmd_to_run = payload.command
-        models = get_registered_models()
-        is_direct_cli = "\\" in cmd_to_run or "/" in cmd_to_run or cmd_to_run.endswith((".exe", ".cmd", ".bat", ".ps1"))
-        selected_api_model = None
-        if not is_direct_cli:
-            selected_api_model = next((m for m in models if m["id"] == cmd_to_run), None)
+        target_type, target = resolve_llm_target(cmd_to_run)
+        selected_api_model = target if target_type == "api" else None
 
         if selected_api_model:
             print(f"[CmdQ] Resolved model: provider={selected_api_model['provider']}, model={selected_api_model['model']}, id={selected_api_model['id']}")
         else:
-            print(f"[CmdQ] Resolved CLI: command={cmd_to_run}, is_direct_path={is_direct_cli}")
+            print(f"[CmdQ] Resolved CLI: command={cmd_to_run}")
         print(f"[CmdQ] Base prompt length: {len(base_prompt)} chars, preview: {base_prompt[:300]}...")
         print(f"[CmdQ] User prompt: {payload.prompt[:200]}")
 
@@ -370,11 +355,8 @@ async def ai_prompt(payload: AIPrompt):
                     if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
                         execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."}]
                     else:
-                        engine = create_engine(
-                            (f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/" if cfg.db_type == "postgres"
-                             else f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/") +
-                            (cfg.database if cfg.database else "postgres")
-                        )
+                        url = cfg.build_url(driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector")
+                        engine = create_engine(url)
                         try:
                             with engine.begin() as conn:
                                 rp = conn.execute(text(extracted_sql))

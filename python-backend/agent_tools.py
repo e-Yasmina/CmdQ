@@ -1,5 +1,4 @@
 import json
-import urllib.parse
 import re
 from typing import Any
 from langchain_core.tools import tool
@@ -16,9 +15,6 @@ def create_sql_agent(
     session_context: list[str],
     max_iterations: int = 10
 ):
-    safe_user = urllib.parse.quote_plus(db_config.user)
-    safe_password = urllib.parse.quote_plus(db_config.password)
-
     @tool
     def execute_sql(query: str) -> str:
         """Execute a SQL query on the connected database and return results as JSON."""
@@ -33,17 +29,12 @@ def create_sql_agent(
             if p_bare.lower() in query.lower():
                 return f"BLOCKED BY SAFETY SYSTEM: '{p_bare}' is protected."
 
-        if db_config.db_type == "postgres":
-            base_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{db_config.host}:{db_config.port}/"
-            db_name = db_config.database if db_config.database else "postgres"
-        else:
-            base_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{db_config.host}:{db_config.port}/"
-            db_name = db_config.database
+        url = db_config.build_url(driver="psycopg2" if db_config.db_type == "postgres" else "mysqlconnector")
 
         from secret_utils import mask_password
 
         try:
-            engine = create_engine(base_url + db_name)
+            engine = create_engine(url)
             with engine.begin() as conn:
                 for ctx_cmd in session_context:
                     if ctx_cmd.strip():

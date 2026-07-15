@@ -1,3 +1,5 @@
+import urllib.parse
+
 from pydantic import BaseModel
 from typing import Dict, Any, List
 
@@ -9,6 +11,31 @@ class ConnectionDetails(BaseModel):
     user: str
     password: str
     database: str = ""
+
+    def build_url(self, database=None, driver=None):
+        """Build a database connection URL.
+
+        Args:
+            database: Override database name (defaults to self.database).
+            driver:  SQLAlchemy driver, e.g. \"psycopg2\", \"mysqlconnector\".
+                     None produces a driverless URL (for DATABASE_URL env var).
+
+        Returns:
+            str: The database URL.
+        """
+        safe_user = urllib.parse.quote_plus(self.user)
+        safe_password = urllib.parse.quote_plus(self.password)
+        db_name = self.database if database is None else database
+
+        if self.db_type == "postgres":
+            drv = f"+{driver}" if driver else ""
+            if not db_name:
+                db_name = "postgres"
+            return f"postgresql{drv}://{safe_user}:{safe_password}@{self.host}:{self.port}/{db_name}"
+        else:
+            drv = f"+{driver}" if driver else ""
+            db_part = f"/{db_name}" if db_name else ""
+            return f"mysql{drv}://{safe_user}:{safe_password}@{self.host}:{self.port}{db_part}"
 
 
 class QueryRequest(BaseModel):

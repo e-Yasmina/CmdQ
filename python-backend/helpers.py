@@ -2,7 +2,6 @@ import os
 import platform
 import re
 import time
-import urllib.parse
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -45,12 +44,7 @@ def _delete_model(models, model_id):
 def generate_native_sql_dump(cfg, temp_path):
     try:
         logger.info(f"Starting native SQL export for {cfg.database}...")
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
-        if cfg.db_type == "postgres":
-            url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
-        else:
-            url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{cfg.database}"
+        url = cfg.build_url(driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector")
         engine = create_engine(url)
         metadata = MetaData()
         logger.info("Reflecting database schema...")

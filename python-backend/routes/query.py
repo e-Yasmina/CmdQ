@@ -1,4 +1,3 @@
-import urllib.parse
 import re
 
 from fastapi import APIRouter
@@ -16,15 +15,8 @@ router = APIRouter()
 async def execute_query(req: QueryRequest):
     try:
         cfg = req.db_config
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
-        if cfg.db_type == "postgres":
-            dbname = cfg.database if cfg.database else "postgres"
-            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{dbname}"
-        else:
-            db_part = f"/{cfg.database}" if cfg.database else ""
-            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}{db_part}"
-        engine = create_engine(connection_url)
+        url = cfg.build_url(driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector")
+        engine = create_engine(url)
         execution_results = []
         with engine.begin() as conn:
             if req.session_context:

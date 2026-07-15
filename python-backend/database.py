@@ -1,7 +1,31 @@
-import os
 import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from models import ConnectionDetails
+
+
+def build_engine(cfg, database=None, driver=None, isolation_level=None):
+    """Create a SQLAlchemy engine from ConnectionDetails.
+
+    Args:
+        cfg: ConnectionDetails instance.
+        database: Override database name (defaults to cfg.database).
+        driver:  SQLAlchemy driver (e.g. \"psycopg2\", \"mysqlconnector\").
+                 Defaults to \"psycopg2\" for postgres, \"mysqlconnector\" for mysql.
+        isolation_level: Optional isolation level string (e.g. \"AUTOCOMMIT\").
+
+    Returns:
+        sqlalchemy.engine.Engine
+    """
+    if driver is None:
+        driver = "psycopg2" if cfg.db_type == "postgres" else "mysqlconnector"
+    url = cfg.build_url(database=database, driver=driver)
+    kwargs = {}
+    if isolation_level:
+        kwargs["isolation_level"] = isolation_level
+    return create_engine(url, **kwargs)
+
 
 def get_db_connection(db_type, host, port, user, password, dbname=""):
     """

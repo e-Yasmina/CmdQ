@@ -1,5 +1,4 @@
 import socket
-import urllib.parse
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import text, create_engine
@@ -68,19 +67,15 @@ async def get_databases(details: ConnectionDetails):
 async def create_database(req: CreateDatabaseRequest):
     try:
         cfg = req.db_config
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
         db_name = validate_identifier(req.new_db_name, "database name")
-        if cfg.db_type == "postgres":
-            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/postgres"
-            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
-            with engine.connect() as conn:
-                conn.execute(text(f'CREATE DATABASE "{db_name}"'))
-        else:
-            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
-            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
-            with engine.connect() as conn:
-                conn.execute(text(f'CREATE DATABASE `{db_name}`'))
+        bootstrap = "postgres" if cfg.db_type == "postgres" else ""
+        engine = create_engine(
+            cfg.build_url(database=bootstrap, driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector"),
+            isolation_level="AUTOCOMMIT"
+        )
+        with engine.connect() as conn:
+            quoted = f'"{db_name}"' if cfg.db_type == "postgres" else f"`{db_name}`"
+            conn.execute(text(f'CREATE DATABASE {quoted}'))
         return {"status": "success", "message": f"Database '{req.new_db_name}' created successfully."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to create database: {mask_password(str(e))}")
@@ -90,21 +85,19 @@ async def create_database(req: CreateDatabaseRequest):
 async def drop_database(req: DropDatabaseRequest):
     try:
         cfg = req.db_config
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
         db_name = validate_identifier(req.db_name, "database name")
         if db_name.lower() in ["postgres", "sys", "information_schema", "mysql", "performance_schema"]:
             raise ValueError("Cannot drop critical system databases.")
-        if cfg.db_type == "postgres":
-            connection_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/postgres"
-            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
-            with engine.connect() as conn:
+        bootstrap = "postgres" if cfg.db_type == "postgres" else ""
+        engine = create_engine(
+            cfg.build_url(database=bootstrap, driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector"),
+            isolation_level="AUTOCOMMIT"
+        )
+        with engine.connect() as conn:
+            if cfg.db_type == "postgres":
                 conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :dbname AND pid <> pg_backend_pid()"), {"dbname": db_name})
                 conn.execute(text(f'DROP DATABASE "{db_name}"'))
-        else:
-            connection_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/"
-            engine = create_engine(connection_url, isolation_level="AUTOCOMMIT")
-            with engine.connect() as conn:
+            else:
                 conn.execute(text(f'DROP DATABASE `{db_name}`'))
         return {"status": "success", "message": f"Database '{req.db_name}' dropped successfully."}
     except Exception as e:

@@ -175,7 +175,7 @@ def mock_agent():
 @pytest.fixture
 def mock_no_models():
     """Ensures get_registered_models returns empty list (forces CLI path)."""
-    with patch("routes.ai.get_registered_models", return_value=[]):
+    with patch("cli_client.get_registered_models", return_value=[]):
         yield
 
 
@@ -190,7 +190,7 @@ def mock_models():
         "api_key": "sk-test",
         "base_url": ""
     }
-    with patch("routes.ai.get_registered_models", return_value=[model]):
+    with patch("cli_client.get_registered_models", return_value=[model]):
         yield
 
 

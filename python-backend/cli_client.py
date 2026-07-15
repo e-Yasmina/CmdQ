@@ -101,6 +101,23 @@ def resolve_and_validate_command(cmd):
     raise ValueError(CLI_ERR_NOT_FOUND.format(cmd=cmd))
 
 
+def resolve_llm_target(cmd_or_model_id):
+    """Resolve a command string to either a registered API model or a CLI path.
+
+    Returns:
+        ("api", model_dict) if a registered API model matches the id.
+        ("cli", resolved_path) if it resolves to a valid CLI command.
+
+    Raises ValueError if neither matches.
+    """
+    models = get_registered_models()
+    selected_api_model = next((m for m in models if m["id"] == cmd_or_model_id), None)
+    if selected_api_model:
+        return ("api", selected_api_model)
+    cmd = resolve_and_validate_command(cmd_or_model_id)
+    return ("cli", cmd)
+
+
 def _run_subprocess_with_files(cmd, input_str, timeout=300, env=None):
     """Run a subprocess with temp file redirection instead of pipes.
     
@@ -167,9 +184,9 @@ def _run_subprocess_with_files(cmd, input_str, timeout=300, env=None):
 
 def invoke_llm_simple(cmd_or_model_id, prompt_str, timeout=300, env=None):
     """Invoke an LLM via registered API model or secure CLI fallback. Returns output text."""
-    models = get_registered_models()
-    selected_api_model = next((m for m in models if m["id"] == cmd_or_model_id), None)
-    if selected_api_model:
+    target_type, target = resolve_llm_target(cmd_or_model_id)
+    if target_type == "api":
+        selected_api_model = target
         from llm_client import get_llm
         print(f"[CmdQ][invoke_llm_simple] Using API model: {selected_api_model['provider']}/{selected_api_model['model']}")
         print(f"[CmdQ][invoke_llm_simple] Prompt length: {len(prompt_str)} chars")
@@ -183,7 +200,7 @@ def invoke_llm_simple(cmd_or_model_id, prompt_str, timeout=300, env=None):
         resp_text = response.content
         print(f"[CmdQ][invoke_llm_simple] API response length: {len(resp_text)} chars, preview: {resp_text[:500]}")
         return resp_text
-    cmd = resolve_and_validate_command(cmd_or_model_id)
+    cmd = target
     print(f"[CmdQ][invoke_llm_simple] Resolved CLI command: {cmd}")
     print(f"[CmdQ][invoke_llm_simple] Prompt length: {len(prompt_str)} chars")
     stdout, stderr = _run_subprocess_with_files([cmd], prompt_str, timeout=timeout, env=env)
@@ -196,9 +213,9 @@ def invoke_llm_simple(cmd_or_model_id, prompt_str, timeout=300, env=None):
 
 def invoke_llm_structured(cmd_or_model_id, prompt_str, analysis_type, timeout=300):
     """Invoke an LLM with structured parsing via API or CLI. Returns (output, parsed_model_or_None)."""
-    models = get_registered_models()
-    selected_api_model = next((m for m in models if m["id"] == cmd_or_model_id), None)
-    if selected_api_model:
+    target_type, target = resolve_llm_target(cmd_or_model_id)
+    if target_type == "api":
+        selected_api_model = target
         from llm_client import get_llm
         from db_context_builder import run_structured_analysis
         llm = get_llm(
@@ -208,6 +225,6 @@ def invoke_llm_structured(cmd_or_model_id, prompt_str, analysis_type, timeout=30
             base_url=selected_api_model.get("base_url") or ""
         )
         return run_structured_analysis(llm, analysis_type, prompt_str)
-    cmd = resolve_and_validate_command(cmd_or_model_id)
+    cmd = target
     stdout, _ = _run_subprocess_with_files([cmd], prompt_str, timeout=timeout)
     return stdout.strip(), None

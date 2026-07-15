@@ -166,13 +166,11 @@ async def import_database(
             else:
                 dml_statements.append(stmt)
 
-        safe_user = urllib.parse.quote_plus(cfg.user)
-        safe_password = urllib.parse.quote_plus(cfg.password)
-
         def make_url(db_name):
-            if cfg.db_type == "postgres":
-                return f"postgresql+psycopg2://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
-            return f"mysql+mysqlconnector://{safe_user}:{safe_password}@{cfg.host}:{cfg.port}/{db_name}"
+            return cfg.build_url(
+                database=db_name,
+                driver="psycopg2" if cfg.db_type == "postgres" else "mysqlconnector"
+            )
 
         bootstrap_db = "postgres" if cfg.db_type == "postgres" else ""
         total_executed = 0
