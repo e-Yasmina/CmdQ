@@ -377,26 +377,34 @@ def _collect_data(session, cfg, req, metrics):
 
         sampled_columns = cols[:10]
         completeness = {}
-        if total_rows > 0:
+        if total_rows > 0 and sampled_columns:
             schema = req.schema_name or "public"
-            for r in sampled_columns:
-                col, dtype = r[0], r[1]
-                try:
-                    if collector.is_pg:
-                        c_q = f'SELECT count("{col}") as non_nulls, count(distinct "{col}") as unique_vals FROM "{schema}"."{table_name}"'
-                    else:
-                        c_q = f"SELECT count(`{col}`) as non_nulls, count(distinct `{col}`) as unique_vals FROM `{table_name}`"
-                    c_res = session.execute(text(c_q)).fetchone()
-                    if c_res:
-                        non_nulls = c_res[0]
-                        unique_vals = c_res[1]
-                        completeness[col] = {
-                            "fill_rate": non_nulls / total_rows,
-                            "unique_ratio": unique_vals / total_rows if total_rows > 0 else 0,
-                            "type": dtype
-                        }
-                except Exception:
-                    pass
+            if collector.is_pg:
+                union_parts = [
+                    f'SELECT :c{i} AS col_name, count("{r[0]}") AS non_nulls, count(distinct "{r[0]}") AS unique_vals FROM "{schema}"."{table_name}"'
+                    for i, r in enumerate(sampled_columns)
+                ]
+                c_q = " UNION ALL ".join(union_parts)
+                params = {f"c{i}": r[0] for i, r in enumerate(sampled_columns)}
+            else:
+                union_parts = [
+                    f"SELECT :c{i} AS col_name, count(`{r[0]}`) AS non_nulls, count(distinct `{r[0]}`) AS unique_vals FROM `{table_name}`"
+                    for i, r in enumerate(sampled_columns)
+                ]
+                c_q = " UNION ALL ".join(union_parts)
+                params = {f"c{i}": r[0] for i, r in enumerate(sampled_columns)}
+            try:
+                c_rows = session.execute(text(c_q), params).fetchall()
+                for cr in c_rows:
+                    col_name, non_nulls, unique_vals = cr[0], cr[1], cr[2]
+                    dtype = next((r[1] for r in sampled_columns if r[0] == col_name), "unknown")
+                    completeness[col_name] = {
+                        "fill_rate": (non_nulls or 0) / total_rows,
+                        "unique_ratio": (unique_vals or 0) / total_rows if total_rows > 0 else 0,
+                        "type": dtype
+                    }
+            except Exception:
+                pass
         metrics["column_stats"] = completeness
     else:
         metrics["largest_tables"] = collector.largest_tables()
