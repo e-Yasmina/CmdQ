@@ -61,7 +61,7 @@ def generate_native_sql_dump(cfg, temp_path):
                 table = metadata.tables[table_name]
                 create_stmt = str(CreateTable(table).compile(engine))
                 f.write(f"-- Structure for table {table_name}\n")
-                f.write(f"DROP TABLE IF EXISTS {table_name} CASCADE;\n")
+                f.write(f"DROP TABLE IF EXISTS {table_name};\n")
                 f.write(f"{create_stmt.strip()};\n\n")
                 logger.info(f"Exporting table data: {table_name}")
                 with engine.connect() as conn:
