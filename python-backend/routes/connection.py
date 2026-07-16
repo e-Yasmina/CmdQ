@@ -1,3 +1,5 @@
+import json
+import logging
 import socket
 
 from fastapi import APIRouter, HTTPException
@@ -8,6 +10,8 @@ from db_context_builder import extract_schema
 from helpers import validate_identifier
 from models import ConnectionDetails, PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, DatabaseCopyRequest
 from secret_utils import mask_password
+
+logger = logging.getLogger("cmdq-backend")
 
 router = APIRouter()
 
@@ -169,13 +173,22 @@ async def copy_database(req: DatabaseCopyRequest):
 
         # Create all non-default schemas on target before copying tables
         tgt_quote = '"' if req.target_config.db_type == "postgres" else "`"
+        logger.info(f"[copy_database] Target schemas from source: {list(schema_dict.keys())}")
         for schema_name in schema_dict:
             s_name = validate_identifier(schema_name, "schema name")
             if req.target_config.db_type != "mysql" and s_name.lower() == "public":
+                logger.info(f"[copy_database] Skipping schema '{s_name}' (public)")
                 continue
             quoted_schema = f"{tgt_quote}{s_name}{tgt_quote}"
-            with tgt_raw_engine.connect() as conn:
-                conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {quoted_schema}'))
+            sql = f'CREATE SCHEMA IF NOT EXISTS {quoted_schema}'
+            logger.info(f"[copy_database] Creating schema on target: {sql}")
+            try:
+                with tgt_raw_engine.connect() as conn:
+                    conn.execute(text(sql))
+                    conn.commit()
+            except Exception as schema_err:
+                logger.error(f"[copy_database] Failed to create schema '{s_name}': {schema_err}")
+                raise
 
         total_tables = 0
         total_rows = 0
@@ -250,15 +263,20 @@ async def copy_database(req: DatabaseCopyRequest):
                 # Ensure schema exists before creating table
                 if req.target_config.db_type == "postgres" and schema_name.lower() != "public":
                     quoted_schema = f'{tgt_quote}{schema_name}{tgt_quote}'
+                    schema_sql = f'CREATE SCHEMA IF NOT EXISTS {quoted_schema}'
                     with tgt_raw_engine.connect() as conn:
-                        conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {quoted_schema}'))
+                        conn.execute(text(schema_sql))
+                        conn.commit()
 
                 create_sql = f"CREATE TABLE {tgt_full} ({', '.join(col_def_parts)})"
+                logger.info(f"[copy_database] Creating table '{schema_name}.{table_name}' on target")
                 with tgt_raw_engine.connect() as conn:
                     conn.execute(text(create_sql))
+                    conn.commit()
 
                 # Copy data rows if requested
                 if req.copy_rows:
+                    logger.info(f"[copy_database] Copying data for '{schema_name}.{table_name}'")
                     select_sql = text(f"SELECT {col_list} FROM {src_full}")
                     with src_raw_engine.connect() as conn:
                         rows_result = conn.execute(select_sql)
@@ -269,11 +287,23 @@ async def copy_database(req: DatabaseCopyRequest):
                         val_plh = ", ".join([f":{c}" for c in src_columns])
                         ins_q = text(f"INSERT INTO {tgt_full} ({tgt_col_list}) VALUES ({val_plh})")
 
-                        batch = [{c: row.get(c) for c in src_columns} for row in rows_data]
+                        batch = []
+                        for row in rows_data:
+                            params = {}
+                            for c in src_columns:
+                                val = row.get(c)
+                                if isinstance(val, (dict, list)):
+                                    val = json.dumps(val)
+                                params[c] = val
+                            batch.append(params)
                         with tgt_raw_engine.connect() as conn:
                             conn.execute(ins_q, batch)
+                            conn.commit()
 
                         total_rows += len(batch)
+                        logger.info(f"[copy_database] Inserted {len(batch)} rows into '{schema_name}.{table_name}'")
+                    else:
+                        logger.info(f"[copy_database] No rows to copy for '{schema_name}.{table_name}'")
 
         msg_parts = [f"{total_tables} tables"]
         if req.copy_rows:
