@@ -193,6 +193,7 @@ async def copy_database(req: DatabaseCopyRequest):
         total_tables = 0
         total_rows = 0
         empty_tables = []
+        rls_tables = []
 
         for schema_name, tables in schema_dict.items():
             schema_name = validate_identifier(schema_name, "schema name")
@@ -281,44 +282,57 @@ async def copy_database(req: DatabaseCopyRequest):
                 if req.copy_rows:
                     logger.info(f"[copy_database] Copying data for '{schema_name}.{table_name}'")
                     select_sql = text(f"SELECT {col_list} FROM {src_full}")
-                    with src_raw_engine.connect() as conn:
-                        rows_result = conn.execute(select_sql)
-                        rows_data = [dict(row._mapping) for row in rows_result.fetchall()]
+                    try:
+                        with src_raw_engine.connect() as conn:
+                            if req.source_config.db_type == "postgres":
+                                conn.execute(text("SET row_security TO off"))
+                            rows_result = conn.execute(select_sql)
+                            rows_data = [dict(row._mapping) for row in rows_result.fetchall()]
 
-                    if rows_data:
-                        tgt_col_list = ", ".join([f"{tgt_quote}{c}{tgt_quote}" for c in src_columns])
-                        val_plh = ", ".join([f":{c}" for c in src_columns])
-                        ins_q = text(f"INSERT INTO {tgt_full} ({tgt_col_list}) VALUES ({val_plh})")
+                        if rows_data:
+                            tgt_col_list = ", ".join([f"{tgt_quote}{c}{tgt_quote}" for c in src_columns])
+                            val_plh = ", ".join([f":{c}" for c in src_columns])
+                            ins_q = text(f"INSERT INTO {tgt_full} ({tgt_col_list}) VALUES ({val_plh})")
 
-                        batch = []
-                        for row in rows_data:
-                            params = {}
-                            for c in src_columns:
-                                val = row.get(c)
-                                if isinstance(val, (dict, list)):
-                                    val = json.dumps(val)
-                                params[c] = val
-                            batch.append(params)
-                        with tgt_raw_engine.connect() as conn:
-                            conn.execute(ins_q, batch)
-                            conn.commit()
+                            batch = []
+                            for row in rows_data:
+                                params = {}
+                                for c in src_columns:
+                                    val = row.get(c)
+                                    if isinstance(val, (dict, list)):
+                                        val = json.dumps(val)
+                                    params[c] = val
+                                batch.append(params)
+                            with tgt_raw_engine.connect() as conn:
+                                conn.execute(ins_q, batch)
+                                conn.commit()
 
-                        total_rows += len(batch)
-                        logger.info(f"[copy_database] Inserted {len(batch)} rows into '{schema_name}.{table_name}'")
-                    else:
-                        empty_tables.append(f"{schema_name}.{table_name}")
-                        logger.info(f"[copy_database] No rows to copy for '{schema_name}.{table_name}'")
+                            total_rows += len(batch)
+                            logger.info(f"[copy_database] Inserted {len(batch)} rows into '{schema_name}.{table_name}'")
+                        else:
+                            rls_tables.append(f"{schema_name}.{table_name}")
+                            logger.info(f"[copy_database] No rows to copy for '{schema_name}.{table_name}'")
+                    except Exception as read_err:
+                        err_str = str(read_err)
+                        if "InsufficientPrivilege" in err_str or "row-level security" in err_str:
+                            logger.warning(f"[copy_database] Skipping data for '{schema_name}.{table_name}' due to RLS: {read_err}")
+                            rls_tables.append(f"{schema_name}.{table_name}")
+                        else:
+                            raise
 
         msg_parts = [f"{total_tables} tables"]
         if req.copy_rows:
             msg_parts.append(f"{total_rows} rows")
-            if empty_tables:
-                msg_parts.append(f"{len(empty_tables)} tables had 0 rows")
             msg_parts_str = ", ".join(msg_parts)
-            detail = f"Tables with 0 rows: {', '.join(empty_tables)}" if empty_tables else "All tables had data."
+            warnings = []
+            if empty_tables:
+                warnings.append(f"{len(empty_tables)} tables had 0 rows")
+            if rls_tables:
+                warnings.append(f"{len(rls_tables)} tables skipped due to RLS")
+            detail = "; ".join(warnings) if warnings else None
         else:
             msg_parts_str = "structures only"
-            detail = ""
+            detail = None
 
         return {
             "status": "success",

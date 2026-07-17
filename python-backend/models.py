@@ -108,6 +108,14 @@ class DataMigrationRequest(BaseModel):
     mappings: List[FieldMapping]
 
 
+class DatabaseCopyRequest(BaseModel):
+    source_config: ConnectionDetails
+    source_database: str
+    target_config: ConnectionDetails
+    target_database: str
+    copy_rows: bool = True
+
+
 class PortCheckDetails(BaseModel):
     host: str
     port: int

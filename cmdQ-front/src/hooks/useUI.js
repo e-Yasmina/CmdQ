@@ -18,6 +18,8 @@ export function useUI() {
   const [showExportDbModal, setShowExportDbModal] = useState(false);
   const [showImportDbModal, setShowImportDbModal] = useState(false);
   const [showMigrationModal, setShowMigrationModal] = useState(false);
+  const [showCopyDbModal, setShowCopyDbModal] = useState(false);
+  const [copyDbSource, setCopyDbSource] = useState(null);
   const [showCreateDbModal, setShowCreateDbModal] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [serverActionModal, setServerActionModal] = useState(null);
@@ -93,6 +95,8 @@ export function useUI() {
     showExportDbModal, setShowExportDbModal,
     showImportDbModal, setShowImportDbModal,
     showMigrationModal, setShowMigrationModal,
+    showCopyDbModal, setShowCopyDbModal,
+    copyDbSource, setCopyDbSource,
     showCreateDbModal, setShowCreateDbModal,
     contextMenu, setContextMenu,
     serverActionModal, setServerActionModal,

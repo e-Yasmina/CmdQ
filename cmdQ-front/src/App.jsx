@@ -4,6 +4,7 @@ import ApiRegistrationForm from './components/forms/ApiRegistrationForm';
 import ExportForm from './components/forms/ExportForm';
 import ImportForm from './components/forms/ImportForm';
 import CreateDatabaseForm from './components/forms/CreateDatabaseForm';
+import DatabaseCopyForm from './components/forms/DatabaseCopyForm';
 import DataMigrationForm from './components/forms/DataMigrationForm';
 import ExplorerContextMenu from './components/ExplorerContextMenu';
 import ServerActionModal from './components/ServerActionModal';
@@ -337,6 +338,10 @@ function App() {
             }
           }
           break;
+        case 'copy':
+          ui.setCopyDbSource({ connId: server.id, database: null });
+          ui.setShowCopyDbModal(true);
+          break;
         case 'refresh':
         case 'reload':
           conn.handleRefreshConnection(server.id);
@@ -349,6 +354,7 @@ function App() {
       if (action === 'export') { conn.setActiveConnectionId(entity.server.id); conn.setActiveDatabase(entity.database); ui.setShowExportDbModal(true); }
       if (action === 'backup') { conn.setActiveConnectionId(entity.server.id); conn.setActiveDatabase(entity.database); ui.setServerActionModal({ type: 'backup', server: entity.server }); }
       if (action === 'restore') { conn.setActiveConnectionId(entity.server.id); conn.setActiveDatabase(entity.database); ui.setShowImportDbModal(true); }
+      if (action === 'copy') { ui.setCopyDbSource({ connId: entity.server.id, database: entity.database }); ui.setShowCopyDbModal(true); }
       if (action === 'properties') ui.setPropertiesModal({ entity });
     } else if (entity.type === 'schema') {
       if (action === 'refresh') conn.handleRefreshConnection(entity.server.id);
@@ -720,6 +726,20 @@ function App() {
         />
       )}
 
+      {ui.showCopyDbModal && (
+        <DatabaseCopyForm
+          connections={conn.connections}
+          sourcePreset={ui.copyDbSource}
+          onCancel={() => { ui.setShowCopyDbModal(false); ui.setCopyDbSource(null); }}
+          onSuccess={(msg, targetConnId) => {
+            alert(msg);
+            ui.setShowCopyDbModal(false);
+            ui.setCopyDbSource(null);
+            if (targetConnId) conn.handleRefreshConnection(targetConnId);
+          }}
+        />
+      )}
+
       {ui.contextMenu && (
         <ExplorerContextMenu
           x={ui.contextMenu.x}
@@ -776,6 +796,7 @@ function App() {
           { id: 'perf-analysis', name: 'Run Performance Analysis', category: 'Analysis', icon: '⚡', shortcut: ui.shortcuts['perf-analysis'], action: () => handleAiAnalysis('performance') },
           { id: 'data-analysis', name: 'Run Data Analysis', category: 'Analysis', icon: '📊', action: () => handleAiAnalysis('data') },
           { id: 'sum-analysis', name: 'Run Summary Analysis', category: 'Analysis', icon: '📝', action: () => handleAiAnalysis('summary') },
+          { id: 'copy-db', name: 'Copy Database', category: 'Data', icon: '📋', action: () => ui.setShowCopyDbModal(true) },
           { id: 'etl-mapping', name: 'Open ETL / Data Mapping', category: 'Data', icon: '🔄', action: () => ui.setShowMigrationModal(true) },
           { id: 'export-db', name: 'Export Active Database', category: 'Data', icon: '📤', action: () => conn.activeDatabase ? ui.setShowExportDbModal(true) : alert("Please select a database first") },
           { id: 'import-db', name: 'Import to Active Database', category: 'Data', icon: '📥', action: () => conn.activeDatabase ? ui.setShowImportDbModal(true) : alert("Please select a database first") },

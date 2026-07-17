@@ -241,6 +241,17 @@ export const apiService = {
         return data;
     },
 
+    copyDatabase: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/database/copy`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Failed to copy database");
+        return data;
+    },
+
     migrateData: async (payload) => {
         const res = await fetch(`${API_BASE_URL}/etl/migrate`, {
             method: "POST",
