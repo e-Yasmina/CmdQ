@@ -192,6 +192,7 @@ async def copy_database(req: DatabaseCopyRequest):
 
         total_tables = 0
         total_rows = 0
+        empty_tables = []
 
         for schema_name, tables in schema_dict.items():
             schema_name = validate_identifier(schema_name, "schema name")
@@ -255,7 +256,9 @@ async def copy_database(req: DatabaseCopyRequest):
                     parts = [f"{tgt_quote}{col_n}{tgt_quote} {dtype_def}"]
                     if not nullable:
                         parts.append("NOT NULL")
-                    if default:
+                    if default and ("nextval" in default or "::regclass" in default or default.startswith("next ")):
+                        pass
+                    elif default:
                         parts.append(f"DEFAULT {default}")
 
                     col_def_parts.append(" ".join(parts))
@@ -303,18 +306,24 @@ async def copy_database(req: DatabaseCopyRequest):
                         total_rows += len(batch)
                         logger.info(f"[copy_database] Inserted {len(batch)} rows into '{schema_name}.{table_name}'")
                     else:
+                        empty_tables.append(f"{schema_name}.{table_name}")
                         logger.info(f"[copy_database] No rows to copy for '{schema_name}.{table_name}'")
 
         msg_parts = [f"{total_tables} tables"]
         if req.copy_rows:
             msg_parts.append(f"{total_rows} rows")
+            if empty_tables:
+                msg_parts.append(f"{len(empty_tables)} tables had 0 rows")
             msg_parts_str = ", ".join(msg_parts)
+            detail = f"Tables with 0 rows: {', '.join(empty_tables)}" if empty_tables else "All tables had data."
         else:
             msg_parts_str = "structures only"
+            detail = ""
 
         return {
             "status": "success",
-            "message": f"Copied database '{src_db}' to '{tgt_db}': {msg_parts_str} copied."
+            "message": f"Copied database '{src_db}' to '{tgt_db}': {msg_parts_str} copied.",
+            "detail": detail,
         }
     except Exception as e:
         return {"status": "error", "message": f"Database copy failed: {mask_password(str(e))}"}
