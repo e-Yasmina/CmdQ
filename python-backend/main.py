@@ -12,6 +12,7 @@ from routes.export import router as export_router
 from routes.import_routes import router as import_router
 from routes.etl import router as etl_router
 from routes.storage import router as storage_router
+from routes.protection import router as protection_router
 
 
 logging.basicConfig(
@@ -40,6 +41,7 @@ app.include_router(export_router)
 app.include_router(import_router)
 app.include_router(etl_router)
 app.include_router(storage_router)
+app.include_router(protection_router)
 
 
 if __name__ == "__main__":

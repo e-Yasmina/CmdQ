@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from sql_executor import SqlExecutor
+from sql_safety_checker import SQLSafetyChecker
 
 from cli_client import (
     get_registered_models, update_registered_models,
@@ -216,6 +217,13 @@ async def ai_prompt(payload: AIPrompt):
                         focused[s_name][t_name] = t_info
             schema_dict = focused
 
+        # Extract relationships for FK-aware protection filtering if not already done
+        if all_relationships is None and payload.get_typed_protection_items():
+            all_relationships = extract_relationships(
+                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                user=cfg.user, password=cfg.password, database=cfg.database
+            )
+
         prompt_parts = [user_prompt]
         if mentions_context:
             prompt_parts.append(mentions_context)
@@ -233,11 +241,12 @@ async def ai_prompt(payload: AIPrompt):
         base_prompt = build_base_prompt(
             db_config=cfg,
             schema_dict=schema_dict,
-            protected_items=payload.protected_items,
+            protected_items=payload.get_typed_protection_items(),
             session_context=payload.session_context,
             attached_file=payload.attached_file,
             chat_history=payload.chat_history,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            relationships=all_relationships
         )
 
         cmd_to_run = payload.command
@@ -268,7 +277,7 @@ async def ai_prompt(payload: AIPrompt):
                 llm=llm,
                 system_prompt=base_prompt,
                 db_config=cfg,
-                protected_items=payload.protected_items,
+                protected_items=[p.dict() for p in payload.get_typed_protection_items()],
                 session_context=payload.session_context
             )
             print(f"[CmdQ] Invoking agent with prompt: {payload.prompt[:200]}")
@@ -351,10 +360,10 @@ async def ai_prompt(payload: AIPrompt):
                 sql_match = re.search(r'```sql(.*?)(?:```|$)', output, re.IGNORECASE | re.DOTALL)
                 if sql_match:
                     extracted_sql = sql_match.group(1).strip()
-                    upper_sql = extracted_sql.upper()
-                    is_unsafe = any(kw in upper_sql for kw in ["DROP ", "ALTER ", "TRUNCATE "])
-                    if is_unsafe or ("DELETE " in upper_sql and "WHERE " not in upper_sql):
-                        execution_results = [{"error": "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."}]
+                    cli_checker = SQLSafetyChecker(payload.protected_items)
+                    is_safe, safety_error = cli_checker.check_all(extracted_sql, context="cli")
+                    if not is_safe:
+                        execution_results = [{"error": f"BLOCKED BY SAFETY SYSTEM: {safety_error}"}]
                     else:
                         executor = SqlExecutor(cfg)
                         sql_result = executor.execute(extracted_sql)
