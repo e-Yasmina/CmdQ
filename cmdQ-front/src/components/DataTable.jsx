@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import ScrollArea from './ScrollArea';
 import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
@@ -17,27 +17,87 @@ function checkIdentifier(name, label) {
     return name;
 }
 
+const PAGE_SIZES = [25, 50, 100, 250, 500];
+
+function compareValues(a, b) {
+    if (a === null || a === undefined) return 1;
+    if (b === null || b === undefined) return -1;
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    const sa = String(a);
+    const sb = String(b);
+    return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 export default function DataTable({ result, activeConfig, activeSchemaName, activeTableName, onRefresh, onLocalMutation, onDiagnose }) {
-    const [editingCell, setEditingCell] = useState(null); // { rowIndex, key, value }
+    const [editingCell, setEditingCell] = useState(null);
     const [addingRow, setAddingRow] = useState(null);
     const [isMutating, setIsMutating] = useState(false);
     const [mutationError, setMutationError] = useState("");
     const [showExportModal, setShowExportModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
     const [showDbImportModal, setShowDbImportModal] = useState(false);
-    const [saveDialog, setSaveDialog] = useState(null); // { content, filename } or null
+    const [saveDialog, setSaveDialog] = useState(null);
+    const [isFullScreen, setIsFullScreen] = useState(false);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(100);
+    const [sortConfig, setSortConfig] = useState(null); // { key, direction: 'asc' | 'desc' }
 
     useEffect(() => {
         setMutationError("");
         setEditingCell(null);
         setAddingRow(null);
+        setCurrentPage(1);
+        setSortConfig(null);
     }, [result]);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [pageSize]);
+
+    useEffect(() => {
+        const handleEsc = (e) => {
+            if (e.key === 'Escape' && isFullScreen) setIsFullScreen(false);
+        };
+        window.addEventListener('keydown', handleEsc);
+        return () => window.removeEventListener('keydown', handleEsc);
+    }, [isFullScreen]);
 
     const effectiveSchema = activeSchemaName || result?.targetSchema;
     const effectiveTable = activeTableName || result?.targetTable;
     const canMutate = Boolean(activeConfig && effectiveSchema && effectiveTable && onRefresh);
     const refSchema = effectiveSchema;
     const refTable = effectiveTable;
+
+    const hasData = result?.data && result.data.length > 0;
+    const columns = hasData ? Object.keys(result.data[0]) : (result?.columns || []);
+
+    const sortedData = useMemo(() => {
+        if (!hasData || !sortConfig) return result?.data || [];
+        const sorted = [...result.data];
+        sorted.sort((a, b) => {
+            const cmp = compareValues(a[sortConfig.key], b[sortConfig.key]);
+            return sortConfig.direction === 'desc' ? -cmp : cmp;
+        });
+        return sorted;
+    }, [hasData, result?.data, sortConfig]);
+
+    const totalPages = hasData ? Math.max(1, Math.ceil(sortedData.length / pageSize)) : 1;
+    const safeCurrentPage = Math.min(currentPage, totalPages);
+    const paginatedData = useMemo(() => {
+        if (!hasData) return [];
+        const start = (safeCurrentPage - 1) * pageSize;
+        return sortedData.slice(start, start + pageSize);
+    }, [hasData, sortedData, safeCurrentPage, pageSize]);
+
+    const handleSort = useCallback((key) => {
+        setSortConfig(prev => {
+            if (prev?.key === key) {
+                if (prev.direction === 'asc') return { key, direction: 'desc' };
+                return null;
+            }
+            return { key, direction: 'asc' };
+        });
+    }, []);
 
     if (result?.loading) {
         return (
@@ -306,13 +366,12 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         return msg;
     };
 
-    const hasData = result.data && result.data.length > 0;
-    const columns = hasData ? Object.keys(result.data[0]) : (result.columns || []);
-
-    console.log("DEBUG: DataTable rendering for", activeTableName, "hasData:", hasData, "columns:", columns, "constraints:", result.constraints);
+    const containerClass = isFullScreen
+        ? "fixed inset-0 z-50 bg-background p-4 flex flex-col h-screen w-screen"
+        : "p-4 flex flex-col gap-4 h-full relative";
 
     return (
-        <ScrollArea className="p-4 flex flex-col gap-4 h-full relative">
+        <ScrollArea className={containerClass}>
             {isMutating && (
                 <div className="absolute inset-0 bg-background/50 z-50 flex items-center justify-center">
                     <div className="bg-panel border border-border p-4 rounded shadow-lg text-primary font-bold animate-pulse">
@@ -321,7 +380,6 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {/* Mutation Error at the top */}
             {mutationError && (
                 <div className="bg-red-500/20 border-2 border-red-500/70 text-red-300 p-3 rounded-lg text-xs shrink-0 shadow-lg flex items-start gap-3">
                     <div className="flex-1 min-w-0">
@@ -341,41 +399,117 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {/* Data Rows displayed first */}
             {(hasData || (result.isTableClick && columns.length > 0)) && (
                 <div className="flex flex-col flex-1 min-h-[200px]">
+                    {/* Toolbar row: row count + fullscreen + pagination */}
+                    <div className="flex items-center justify-between mb-1.5 shrink-0 flex-wrap gap-2">
+                        <div className="flex items-center gap-3">
+                            <span className="text-[11px] text-gray-500 font-bold">
+                                {sortedData.length} row{sortedData.length !== 1 ? 's' : ''}
+                                {sortConfig && ` · sorted by ${sortConfig.key} ${sortConfig.direction === 'asc' ? '↑' : '↓'}`}
+                            </span>
+                            {hasData && sortedData.length > pageSize && (
+                                <div className="flex items-center gap-1">
+                                    {PAGE_SIZES.map(sz => (
+                                        <button
+                                            key={sz}
+                                            onClick={() => setPageSize(sz)}
+                                            className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${pageSize === sz ? 'bg-primary/20 text-primary font-bold' : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'}`}
+                                        >
+                                            {sz}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {hasData && totalPages > 1 && (
+                                <div className="flex items-center gap-1">
+                                    <button
+                                        onClick={() => setCurrentPage(1)}
+                                        disabled={safeCurrentPage <= 1}
+                                        className="text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-default px-1 text-xs"
+                                        title="First page"
+                                    >«</button>
+                                    <button
+                                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                        disabled={safeCurrentPage <= 1}
+                                        className="text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-default px-1 text-xs"
+                                        title="Previous page"
+                                    >‹</button>
+                                    <span className="text-[11px] text-gray-400 font-code min-w-[80px] text-center">
+                                        {safeCurrentPage} / {totalPages}
+                                    </span>
+                                    <button
+                                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                        disabled={safeCurrentPage >= totalPages}
+                                        className="text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-default px-1 text-xs"
+                                        title="Next page"
+                                    >›</button>
+                                    <button
+                                        onClick={() => setCurrentPage(totalPages)}
+                                        disabled={safeCurrentPage >= totalPages}
+                                        className="text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-default px-1 text-xs"
+                                        title="Last page"
+                                    >»</button>
+                                </div>
+                            )}
+                            <button
+                                onClick={() => setIsFullScreen(!isFullScreen)}
+                                className="text-gray-500 hover:text-primary px-1.5 py-0.5 rounded text-xs transition-colors border border-transparent hover:border-border"
+                                title={isFullScreen ? 'Exit full view (Esc)' : 'Full view'}
+                            >
+                                {isFullScreen ? '⊡' : '⛶'}
+                            </button>
+                        </div>
+                    </div>
+
                     <ScrollArea className="flex-1 border border-border rounded bg-background overflow-auto min-h-0 relative">
                         <table className="min-w-max w-full text-left text-xs text-gray-300">
                             <thead className="bg-panel text-gray-400 uppercase sticky top-0 shadow-sm z-10">
                                 <tr>
                                     {canMutate && <th className="p-2 border-b border-r border-border w-16 text-center">Act</th>}
-                                    {columns.map(k => (
-                                        <th key={k} className="p-2 border-b border-r border-border whitespace-nowrap">{k}</th>
-                                    ))}
+                                    {columns.map(k => {
+                                        const isSorted = sortConfig?.key === k;
+                                        const arrow = isSorted ? (sortConfig.direction === 'asc' ? ' ▲' : ' ▼') : '';
+                                        return (
+                                            <th
+                                                key={k}
+                                                className="p-2 border-b border-r border-border whitespace-nowrap cursor-pointer hover:text-primary transition-colors select-none"
+                                                onClick={() => handleSort(k)}
+                                                title={`Click to sort by ${k}`}
+                                            >
+                                                {k}{arrow}
+                                            </th>
+                                        );
+                                    })}
                                 </tr>
                             </thead>
                             <tbody>
-                                {result.data.map((row, i) => (
-                                    <tr key={i} className="border-b border-border/50 hover:bg-white/5 transition-colors">
-                                        {canMutate && (
-                                            <td className="p-2 border-r border-border/50 text-center select-none">
-                                                <button
-                                                    onClick={() => handleDelete(row, i)}
-                                                    className="text-red-400 hover:text-red-300 transition-colors p-1"
-                                                    title="Delete Row"
-                                                    disabled={isMutating}
-                                                >
-                                                    🗑️
-                                                </button>
-                                            </td>
-                                        )}
-                                        {columns.map((k, idx) => (
-                                            <td key={idx} className="p-1 border-r border-border/50 max-w-sm whitespace-nowrap">
-                                                {renderCell(row, i, k, row[k])}
-                                            </td>
-                                        ))}
-                                    </tr>
-                                ))}
+                                {paginatedData.map((row, i) => {
+                                    const realIndex = (safeCurrentPage - 1) * pageSize + i;
+                                    return (
+                                        <tr key={realIndex} className="border-b border-border/50 hover:bg-white/5 transition-colors">
+                                            {canMutate && (
+                                                <td className="p-2 border-r border-border/50 text-center select-none">
+                                                    <button
+                                                        onClick={() => handleDelete(row, realIndex)}
+                                                        className="text-red-400 hover:text-red-300 transition-colors p-1"
+                                                        title="Delete Row"
+                                                        disabled={isMutating}
+                                                    >
+                                                        🗑️
+                                                    </button>
+                                                </td>
+                                            )}
+                                            {columns.map((k, idx) => (
+                                                <td key={idx} className="p-1 border-r border-border/50 max-w-sm whitespace-nowrap">
+                                                    {renderCell(row, realIndex, k, row[k])}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    );
+                                })}
                                 {addingRow && (
                                     <tr className="bg-primary/10 border-b border-primary/30">
                                         <td className="p-2 border-r border-border/50 text-center whitespace-nowrap">
@@ -442,8 +576,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {/* AI Text Output */}
-            {result.message && (
+            {!isFullScreen && result.message && (
               <ScrollArea className="max-h-48 overflow-y-auto mt-2 border border-border rounded bg-background shrink-0">
                 <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3">
                   {(() => {
@@ -483,8 +616,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
               />
             )}
 
-            {/* SQL Executed */}
-            {result.extracted_sql && (
+            {!isFullScreen && result.extracted_sql && (
                 <div className="mt-2 shrink-0">
                     <strong className="text-primary text-xs uppercase flex items-center gap-2">
                         Executed SQL
@@ -500,9 +632,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {/* Removed the bottom placement of these rendering blocks in favor of putting them above */}
-
-            {!hasData && (result.extracted_sql || result.message) && (
+            {!isFullScreen && !hasData && (result.extracted_sql || result.message) && (
                 <div className="flex flex-col items-center gap-3 mt-4 p-6 border border-dashed border-border rounded bg-panel/30">
                     <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
                     
@@ -522,8 +652,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {/* Constraints Display */}
-            {(result.constraints || (result.isTableClick && columns.length > 0)) && (
+            {!isFullScreen && (result.constraints || (result.isTableClick && columns.length > 0)) && (
                 <div className="mt-4 border border-border rounded bg-panel/20 p-4">
                     <h3 className="text-xs font-bold text-primary uppercase mb-2 flex items-center gap-2">
                         🔗 Table Constraints
@@ -552,7 +681,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {hasData && (
+            {!isFullScreen && hasData && (
                 <div className="flex justify-end mt-2 shrink-0 gap-2">
                     <button
                         onClick={() => setShowDbImportModal(true)}

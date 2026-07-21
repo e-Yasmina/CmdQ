@@ -154,7 +154,7 @@ export function useAiPrompt() {
         const extracted = extractTableFromQuery(data.extracted_sql);
         const isSelect = /^\s*(?:--.*\n\s*)*select\b/i.test(data.extracted_sql);
         data.isTableClick = false;
-        data.targetSchema = (isSelect && extracted) ? extracted.schema : null;
+        data.targetSchema = (isSelect && extracted) ? (extracted.schema || 'public') : null;
         data.targetTable = (isSelect && extracted) ? extracted.table : null;
 
         if (isSelect && extracted) {

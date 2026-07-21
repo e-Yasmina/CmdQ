@@ -61,7 +61,7 @@ export function useAnalysis() {
         message: data.message,
         extracted_sql: queryText,
         isTableClick: false,
-        targetSchema: (isSelect && extracted) ? extracted.schema : null,
+        targetSchema: (isSelect && extracted) ? (extracted.schema || 'public') : null,
         targetTable: (isSelect && extracted) ? extracted.table : null,
       });
     } catch (err) {
