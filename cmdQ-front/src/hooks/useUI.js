@@ -26,6 +26,10 @@ export function useUI() {
   const [propertiesModal, setPropertiesModal] = useState(null);
   const [diagnosisTarget, setDiagnosisTarget] = useState(null);
 
+  // Entity Graph
+  const [showEntityGraph, setShowEntityGraph] = useState(false);
+  const [entityGraphTarget, setEntityGraphTarget] = useState(null); // { database, schema, config }
+
   const startResizingSidebar = useCallback((e) => {
     e.preventDefault();
     setIsResizingSidebar(true);
@@ -102,6 +106,8 @@ export function useUI() {
     serverActionModal, setServerActionModal,
     propertiesModal, setPropertiesModal,
     diagnosisTarget, setDiagnosisTarget,
+    showEntityGraph, setShowEntityGraph,
+    entityGraphTarget, setEntityGraphTarget,
     startResizingSidebar, startResizingTopPanel,
     stopResizing, resize,
     handleSaveShortcut, handleExplorerContextMenu,

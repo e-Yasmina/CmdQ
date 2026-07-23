@@ -160,3 +160,14 @@ class ExportTableRequest(BaseModel):
 class ExportDatabaseRequest(BaseModel):
     db_config: ConnectionDetails
     format: str = "sql"
+
+
+class EntityGraphRequest(BaseModel):
+    db_config: ConnectionDetails
+    schema_name: str = ""
+    include_columns: bool = True
+    include_column_types: bool = True
+    include_pk: bool = True
+    include_fk: bool = True
+    include_not_null: bool = True
+    include_enums: bool = True

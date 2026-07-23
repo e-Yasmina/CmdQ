@@ -10,6 +10,7 @@ import ExplorerContextMenu from './components/ExplorerContextMenu';
 import ServerActionModal from './components/ServerActionModal';
 import ProtectionDiagnosisModal from './components/ProtectionDiagnosisModal';
 import PropertiesModal from './components/PropertiesModal';
+import EntityGraphModal from './components/EntityGraphModal';
 import CommandPalette from './components/CommandPalette';
 import ShortcutsModal from './components/ShortcutsModal';
 import Sidebar from './components/layout/Sidebar';
@@ -349,6 +350,15 @@ function App() {
         default: break;
       }
     } else if (entity.type === 'database') {
+      if (action === 'generate_graph') {
+        const server = conn.connections.find(c => c.id === entity.server?.id);
+        ui.setEntityGraphTarget({
+          database: entity.database,
+          schema: '',
+          config: server ? { ...server.config, database: entity.database } : null,
+        });
+        ui.setShowEntityGraph(true);
+      }
       if (action === 'refresh') conn.handleRefreshConnection(entity.server.id);
       if (action === 'delete') conn.handleDropDatabase(entity.server.id, entity.database);
       if (action === 'export') { conn.setActiveConnectionId(entity.server.id); conn.setActiveDatabase(entity.database); ui.setShowExportDbModal(true); }
@@ -783,6 +793,15 @@ function App() {
         />
       )}
 
+      {ui.showEntityGraph && ui.entityGraphTarget && (
+        <EntityGraphModal
+          activeConfig={ui.entityGraphTarget.config}
+          targetDatabase={ui.entityGraphTarget.database}
+          targetSchema={ui.entityGraphTarget.schema}
+          onClose={() => { ui.setShowEntityGraph(false); ui.setEntityGraphTarget(null); }}
+        />
+      )}
+
       <CommandPalette
         isOpen={ui.showCommandPalette}
         onClose={() => ui.setShowCommandPalette(false)}
@@ -798,6 +817,14 @@ function App() {
           { id: 'sum-analysis', name: 'Run Summary Analysis', category: 'Analysis', icon: '📝', action: () => handleAiAnalysis('summary') },
           { id: 'copy-db', name: 'Copy Database', category: 'Data', icon: '📋', action: () => ui.setShowCopyDbModal(true) },
           { id: 'etl-mapping', name: 'Open ETL / Data Mapping', category: 'Data', icon: '🔄', action: () => ui.setShowMigrationModal(true) },
+          { id: 'entity-graph', name: 'Generate Entity Graph', category: 'Data', icon: '🔀', action: () => {
+            if (conn.activeConfig && conn.activeDatabase) {
+              ui.setEntityGraphTarget({ database: conn.activeDatabase, schema: '', config: conn.activeConfig });
+              ui.setShowEntityGraph(true);
+            } else {
+              alert("Please select a database first");
+            }
+          }},
           { id: 'export-db', name: 'Export Active Database', category: 'Data', icon: '📤', action: () => conn.activeDatabase ? ui.setShowExportDbModal(true) : alert("Please select a database first") },
           { id: 'import-db', name: 'Import to Active Database', category: 'Data', icon: '📥', action: () => conn.activeDatabase ? ui.setShowImportDbModal(true) : alert("Please select a database first") },
           { id: 'clear-chat', name: 'Clear Chat History', category: 'AI', icon: '🧹', action: () => ai.setChatHistory([]) },

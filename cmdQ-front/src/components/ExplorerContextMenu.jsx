@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 export default function ExplorerContextMenu({ x, y, onClose, onAction, entity }) {
     const menuRef = useRef(null);
@@ -31,6 +31,7 @@ export default function ExplorerContextMenu({ x, y, onClose, onAction, entity })
         ];
     } else if (entity.type === 'database') {
         menuItems = [
+            { id: 'generate_graph', label: 'Entity Graph', icon: '🔀' },
             { id: 'refresh', label: 'Refresh', icon: '🔄' },
             { id: 'export', label: 'Export', icon: '📤' },
             { id: 'restore', label: 'Restore', icon: '📥' },

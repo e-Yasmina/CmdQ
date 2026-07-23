@@ -6,9 +6,9 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text, create_engine
 
 from database import build_engine, get_db_connection
-from db_context_builder import extract_schema
+from db_context_builder import extract_schema, extract_entity_graph_data
 from helpers import validate_identifier
-from models import ConnectionDetails, PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, DatabaseCopyRequest
+from models import ConnectionDetails, PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, DatabaseCopyRequest, EntityGraphRequest
 from secret_utils import mask_password
 
 logger = logging.getLogger("cmdq-backend")
@@ -362,3 +362,34 @@ async def get_schema(details: ConnectionDetails):
         return {"status": "success", "schema": schema_dict}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Schema extraction failed: {mask_password(str(e))}")
+
+
+@router.post("/entity_graph")
+async def get_entity_graph(req: EntityGraphRequest):
+    try:
+        graph_data = extract_entity_graph_data(
+            db_type=req.db_config.db_type,
+            host=req.db_config.host,
+            port=req.db_config.port,
+            user=req.db_config.user,
+            password=req.db_config.password,
+            database=req.db_config.database,
+            schema_name=req.schema_name,
+            include_columns=req.include_columns,
+            include_column_types=req.include_column_types,
+            include_pk=req.include_pk,
+            include_fk=req.include_fk,
+            include_not_null=req.include_not_null,
+            include_enums=req.include_enums,
+        )
+        print(f"[ENTITY_GRAPH DEBUG] db={req.db_config.database} type={req.db_config.db_type} "
+              f"nodes={len(graph_data['nodes'])} edges={len(graph_data['edges'])} "
+              f"total_tables={graph_data.get('total_tables', '?')} truncated={graph_data.get('truncated', False)}")
+        if graph_data['edges']:
+            for e in graph_data['edges'][:5]:
+                print(f"  edge: {e['source']} --{e.get('source_column','')}->{e['target']} ({e.get('target_column','')})")
+        else:
+            print("[ENTITY_GRAPH DEBUG] NO EDGES RETURNED - FK query returned 0 results or edges not built")
+        return {"status": "success", "graph": graph_data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Entity graph extraction failed: {mask_password(str(e))}")

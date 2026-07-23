@@ -16,6 +16,10 @@ export default function DatabaseCopyForm({ connections, onCancel, onSuccess, sou
     const srcDbs = srcConn ? srcConn.databases : [];
     const srcSchema = srcConn && sourceDb && srcConn.schemas ? srcConn.schemas[sourceDb] : null;
 
+    const tgtConn = connections.find(c => c.id === targetConnId);
+    const targetIsSameServer = srcConn && tgtConn && srcConn.id === tgtConn.id;
+    const suggestedTargetName = sourceDb ? `${sourceDb}_copy` : "";
+
     // Detect RLS tables whenever source schema changes
     useEffect(() => {
         if (!srcSchema) {
@@ -78,10 +82,6 @@ export default function DatabaseCopyForm({ connections, onCancel, onSuccess, sou
             setIsLoading(false);
         }
     };
-
-    const tgtConn = connections.find(c => c.id === targetConnId);
-    const targetIsSameServer = srcConn && tgtConn && srcConn.id === tgtConn.id;
-    const suggestedTargetName = sourceDb ? `${sourceDb}_copy` : "";
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
