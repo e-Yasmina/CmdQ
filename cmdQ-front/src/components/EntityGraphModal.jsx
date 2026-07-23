@@ -19,22 +19,33 @@ const ROW_HEIGHT = 22;
 const HEADER_HEIGHT = 36;
 const COMPACT_HEIGHT = 40;
 const PADDING = 12;
+const MAX_VISIBLE_COLUMNS = 14;
 
 function isColumnsVisible(node) {
   const s = node.data?.settings;
-  return s && (s.showColumns || s.showPk || s.showFk || s.showNotNull || s.showEnums || s.showTypes);
+  return Boolean(s?.showColumns);
 }
 
 function calcNodeHeight(node) {
   if (!isColumnsVisible(node)) return COMPACT_HEIGHT;
-  const colCount = node.columns?.length || 0;
-  return HEADER_HEIGHT + PADDING + colCount * ROW_HEIGHT + (colCount > 0 ? PADDING : 0);
+  const colCount = Math.min(node.columns?.length || 0, MAX_VISIBLE_COLUMNS);
+  const hiddenCount = Math.max((node.columns?.length || 0) - MAX_VISIBLE_COLUMNS, 0);
+  return HEADER_HEIGHT + PADDING + colCount * ROW_HEIGHT + (hiddenCount > 0 ? ROW_HEIGHT : 0) + (colCount > 0 ? PADDING : 0);
 }
 
 function getLayoutedElements(nodes, edges, direction = 'LR') {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: direction, nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
+  const dense = nodes.length > 30 || edges.length > 45;
+  const expanded = nodes.some(isColumnsVisible);
+  g.setGraph({
+    rankdir: direction,
+    nodesep: dense ? 110 : expanded ? 90 : 70,
+    ranksep: dense ? 220 : expanded ? 180 : 130,
+    edgesep: dense ? 70 : 45,
+    marginx: 80,
+    marginy: 80,
+  });
 
   nodes.forEach((n) => {
     const h = calcNodeHeight(n);
@@ -69,6 +80,8 @@ function TableNode({ data }) {
   const { table, schema, columns, settings } = data;
   const nodeHeight = calcNodeHeight(data);
   const displayCols = columns || [];
+  const visibleCols = displayCols.slice(0, MAX_VISIBLE_COLUMNS);
+  const hiddenColumnCount = Math.max(displayCols.length - visibleCols.length, 0);
   const compact = !isColumnsVisible({ data: { settings }, columns });
 
   return (
@@ -104,7 +117,7 @@ function TableNode({ data }) {
           </div>
           {settings.showColumns && displayCols.length > 0 && (
             <div className="px-2 py-1.5">
-              {displayCols.map((col) => (
+              {visibleCols.map((col) => (
                 <div
                   key={col.name}
                   className="flex items-center gap-1.5 py-px"
@@ -139,6 +152,11 @@ function TableNode({ data }) {
                   )}
                 </div>
               ))}
+              {hiddenColumnCount > 0 && (
+                <div className="text-[10px] py-px text-center" style={{ height: ROW_HEIGHT, color: PALETTE.secondary }}>
+                  + {hiddenColumnCount} more columns
+                </div>
+              )}
             </div>
           )}
         </>
@@ -161,6 +179,8 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
     showFk: true,
     showNotNull: true,
     showEnums: true,
+    showEdgeLabels: false,
+    layoutDirection: 'LR',
     schemaFilter: '',
   });
 
@@ -235,27 +255,42 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
       },
     }));
 
-    const rfEdges = graphData.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: `${e.source_column} \u2192 ${e.target_column}`,
-      labelStyle: { fill: PALETTE.secondary, fontWeight: 500, fontSize: 10 },
-      labelBgStyle: { fill: PALETTE.panel, fillOpacity: 0.9 },
-      labelBgPadding: [4, 2],
-      labelBgBorderRadius: 4,
-      type: 'smoothstep',
-      animated: true,
-      style: { stroke: PALETTE.secondary, strokeWidth: 1.5 },
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: PALETTE.secondary,
-        width: 16,
-        height: 16,
-      },
-    }));
+    const edgeGroups = graphData.edges.reduce((groups, edge) => {
+      const key = `${edge.source}__${edge.target}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(edge);
+      return groups;
+    }, new Map());
 
-    const result = getLayoutedElements(rfNodes, rfEdges);
+    const rfEdges = Array.from(edgeGroups.entries()).map(([key, groupedEdges]) => {
+      const first = groupedEdges[0];
+      const label = groupedEdges.length === 1
+        ? `${first.source_column} \u2192 ${first.target_column}`
+        : `${groupedEdges.length} relationships`;
+
+      return {
+        id: key,
+        source: first.source,
+        target: first.target,
+        label: settings.showEdgeLabels ? label : undefined,
+        title: groupedEdges.map((e) => `${e.source_column} -> ${e.target_column}`).join('\n'),
+        labelStyle: { fill: PALETTE.secondary, fontWeight: 500, fontSize: 10 },
+        labelBgStyle: { fill: PALETTE.panel, fillOpacity: 0.95 },
+        labelBgPadding: [5, 3],
+        labelBgBorderRadius: 4,
+        type: 'smoothstep',
+        animated: false,
+        style: { stroke: PALETTE.secondary, strokeWidth: groupedEdges.length > 1 ? 2 : 1.4, opacity: 0.75 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: PALETTE.secondary,
+          width: 16,
+          height: 16,
+        },
+      };
+    });
+
+    const result = getLayoutedElements(rfNodes, rfEdges, settings.layoutDirection);
     console.log('[ENTITY_GRAPH DEBUG] Layout complete:', {
       inputNodes: rfNodes.length,
       inputEdges: rfEdges.length,
@@ -410,6 +445,26 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
               disabled={!settings.showColumns}
               color={PALETTE.chartViolet}
             />
+            <ToggleSwitch
+              label="Edge Labels"
+              checked={settings.showEdgeLabels}
+              onChange={() => toggleSetting('showEdgeLabels')}
+              color={PALETTE.chartBlue}
+            />
+
+            <div className="border-t my-3" style={{ borderColor: PALETTE.border }} />
+            <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: PALETTE.secondary }}>
+              Layout
+            </div>
+            <select
+              value={settings.layoutDirection}
+              onChange={(e) => setSettings((prev) => ({ ...prev, layoutDirection: e.target.value }))}
+              className="w-full text-xs p-1.5 rounded border outline-none"
+              style={{ backgroundColor: PALETTE.background, borderColor: PALETTE.border, color: PALETTE.textPrimary }}
+            >
+              <option value="LR">Left to Right</option>
+              <option value="TB">Top to Bottom</option>
+            </select>
 
             {uniqueSchemas.length > 1 && (
               <>
