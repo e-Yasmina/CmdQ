@@ -48,6 +48,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+registered_models.json
 .venv
 venv/
 ENV/
