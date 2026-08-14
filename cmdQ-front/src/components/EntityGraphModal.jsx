@@ -109,7 +109,7 @@ function TableNode({ data }) {
             className="px-3 py-2 flex items-center gap-2"
             style={{ backgroundColor: PALETTE.primary + '18', borderBottom: `1px solid ${PALETTE.border}` }}
           >
-            <span className="text-[10px] opacity-50" style={{ color: PALETTE.secondary }}>{schema}.</span>
+            {/* <span className="text-[10px] opacity-50" style={{ color: PALETTE.secondary }}>{schema}.</span> */}
             <span className="text-xs font-bold truncate" style={{ color: PALETTE.textPrimary }}>{table}</span>
             <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: PALETTE.border, color: PALETTE.secondary }}>
               {displayCols.length}
@@ -181,6 +181,7 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
     showEnums: true,
     showEdgeLabels: false,
     layoutDirection: 'LR',
+    maxNodes: 80,
     schemaFilter: '',
   });
 
@@ -203,6 +204,7 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
         include_fk: settings.showFk,
         include_not_null: settings.showNotNull,
         include_enums: settings.showEnums,
+        max_nodes: settings.maxNodes,
       };
       const res = await apiService.fetchEntityGraph(payload);
       console.log('[ENTITY_GRAPH DEBUG] API response:', {
@@ -262,28 +264,54 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
       return groups;
     }, new Map());
 
+    const M2M_COLOR = PALETTE.chartViolet || '#a78bfa';
+
     const rfEdges = Array.from(edgeGroups.entries()).map(([key, groupedEdges]) => {
       const first = groupedEdges[0];
-      const label = groupedEdges.length === 1
+      const hasM2M = groupedEdges.some(e => e.relationship_type === 'M:N');
+      const m2mEdge = groupedEdges.find(e => e.relationship_type === 'M:N');
+      const directEdges = groupedEdges.filter(e => e.relationship_type !== 'M:N');
+
+      let relLabel = '';
+      if (hasM2M) {
+        relLabel = m2mEdge.via_table ? `M:N via ${m2mEdge.via_table}` : 'M:N';
+      } else if (directEdges.length > 0) {
+        const types = [...new Set(directEdges.map(e => e.relationship_type))];
+        relLabel = types.join(' / ');
+      } else if (groupedEdges.length > 1) {
+        relLabel = `${groupedEdges.length} relationships`;
+      }
+
+      const colLabel = groupedEdges.length === 1 && first.source_column
         ? `${first.source_column} \u2192 ${first.target_column}`
-        : `${groupedEdges.length} relationships`;
+        : relLabel;
+
+      const tooltipLines = groupedEdges.map(e => {
+        const via = e.via_table ? ` (via ${e.via_table})` : '';
+        return `${e.relationship_type || '?'}: ${e.source_column || '*'} -> ${e.target_column || '*'}${via}`;
+      });
 
       return {
         id: key,
         source: first.source,
         target: first.target,
-        label: settings.showEdgeLabels ? label : undefined,
-        title: groupedEdges.map((e) => `${e.source_column} -> ${e.target_column}`).join('\n'),
-        labelStyle: { fill: PALETTE.secondary, fontWeight: 500, fontSize: 10 },
+        label: settings.showEdgeLabels ? colLabel : undefined,
+        title: tooltipLines.join('\n'),
+        labelStyle: { fill: hasM2M ? M2M_COLOR : PALETTE.secondary, fontWeight: 500, fontSize: 10 },
         labelBgStyle: { fill: PALETTE.panel, fillOpacity: 0.95 },
         labelBgPadding: [5, 3],
         labelBgBorderRadius: 4,
         type: 'smoothstep',
         animated: false,
-        style: { stroke: PALETTE.secondary, strokeWidth: groupedEdges.length > 1 ? 2 : 1.4, opacity: 0.75 },
+        style: {
+          stroke: hasM2M ? M2M_COLOR : PALETTE.secondary,
+          strokeWidth: hasM2M ? 2.2 : groupedEdges.length > 1 ? 2 : 1.4,
+          opacity: 0.8,
+          strokeDasharray: hasM2M ? '8 4' : undefined,
+        },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: PALETTE.secondary,
+          color: hasM2M ? M2M_COLOR : PALETTE.secondary,
           width: 16,
           height: 16,
         },
@@ -466,6 +494,25 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
               <option value="TB">Top to Bottom</option>
             </select>
 
+            <div className="mt-2">
+              <div className="text-[10px] mb-1" style={{ color: PALETTE.secondary }}>Max Tables</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={10}
+                  max={300}
+                  step={10}
+                  value={settings.maxNodes}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, maxNodes: Number(e.target.value) }))}
+                  className="flex-1 h-1 accent-current"
+                  style={{ accentColor: PALETTE.primary }}
+                />
+                <span className="text-[11px] font-mono w-8 text-right" style={{ color: PALETTE.textPrimary }}>
+                  {settings.maxNodes}
+                </span>
+              </div>
+            </div>
+
             {uniqueSchemas.length > 1 && (
               <>
                 <div className="border-t my-3" style={{ borderColor: PALETTE.border }} />
@@ -497,7 +544,7 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
             <div className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: PALETTE.secondary }}>
               Legend
             </div>
-            <div className="space-y-1 text-[10px]" style={{ color: PALETTE.textPrimary }}>
+            <div className="space-y-1.5 text-[10px]" style={{ color: PALETTE.textPrimary }}>
               <div className="flex items-center gap-2"><span>&#x1f511;</span> Primary Key</div>
               <div className="flex items-center gap-2"><span style={{ color: PALETTE.chartBlue }}>&#x1f517;</span> Foreign Key</div>
               <div className="flex items-center gap-2"><span style={{ color: PALETTE.chartAmber }}>&#x25C6;</span> NOT NULL</div>
@@ -505,6 +552,15 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
               <div className="flex items-center gap-2">
                 <span className="text-[8px] px-1 rounded-full" style={{ color: PALETTE.chartViolet, backgroundColor: PALETTE.chartViolet + '20' }}>E</span>
                 Enum type
+              </div>
+              <div className="border-t my-1" style={{ borderColor: PALETTE.border }} />
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-5 border-t" style={{ borderColor: PALETTE.secondary }} />
+                1:N relationship
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-5 border-t border-dashed" style={{ borderColor: PALETTE.chartViolet || '#a78bfa' }} />
+                M:N relationship
               </div>
             </div>
           </div>

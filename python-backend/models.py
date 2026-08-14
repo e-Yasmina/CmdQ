@@ -171,3 +171,4 @@ class EntityGraphRequest(BaseModel):
     include_fk: bool = True
     include_not_null: bool = True
     include_enums: bool = True
+    max_nodes: int = 80

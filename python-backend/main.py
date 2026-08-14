@@ -25,8 +25,11 @@ app = FastAPI(title="Antigravity Engine Sidecar")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],
-    allow_origin_regex=r"^(https?://.*|null)$",
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_origin_regex=r"^(https?://.*|file://.*|vscode-webview://.*|null)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

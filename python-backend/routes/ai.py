@@ -145,6 +145,29 @@ def translate_table(req: TranslateRequest):
         raise HTTPException(status_code=400, detail=f"Translation failed: {mask_password(str(e))}")
 
 
+def _stringify_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item and isinstance(item["text"], str):
+                    parts.append(item["text"])
+                elif "content" in item and isinstance(item["content"], str):
+                    parts.append(item["content"])
+                else:
+                    parts.append(str(item))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
 @router.post("/ai/prompt")
 async def ai_prompt(payload: AIPrompt):
     try:
@@ -279,7 +302,7 @@ async def ai_prompt(payload: AIPrompt):
             output_parts = []
             for i, msg in enumerate(messages):
                 role = getattr(msg, "type", "unknown")
-                content = getattr(msg, "content", "") or ""
+                content = _stringify_content(getattr(msg, "content", "") or "")
                 tool_calls = getattr(msg, "tool_calls", None) or []
                 tc_info = ""
                 if tool_calls:
@@ -305,7 +328,7 @@ async def ai_prompt(payload: AIPrompt):
                         extracted_sql = tc.get("args", {}).get("query", "")
                         if i + 1 < len(messages):
                             obs_msg = messages[i + 1]
-                            obs = obs_msg.content if hasattr(obs_msg, "content") else ""
+                            obs = _stringify_content(obs_msg.content if hasattr(obs_msg, "content") else "")
                             try:
                                 parsed = json.loads(obs)
                                 execution_results = parsed if isinstance(parsed, list) else [parsed]

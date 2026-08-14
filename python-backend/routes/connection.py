@@ -381,6 +381,7 @@ async def get_entity_graph(req: EntityGraphRequest):
             include_fk=req.include_fk,
             include_not_null=req.include_not_null,
             include_enums=req.include_enums,
+            max_nodes=req.max_nodes,
         )
         print(f"[ENTITY_GRAPH DEBUG] db={req.db_config.database} type={req.db_config.db_type} "
               f"nodes={len(graph_data['nodes'])} edges={len(graph_data['edges'])} "

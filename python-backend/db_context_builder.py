@@ -468,7 +468,7 @@ def extract_entity_graph_data(db_type, host, port, user, password, database,
                                schema_name="", include_columns=True,
                                include_column_types=True, include_pk=True,
                                include_fk=True, include_not_null=True,
-                               include_enums=True):
+                               include_enums=True, max_nodes=80):
     """
     Extracts entity-relationship graph data for visualization.
 
@@ -482,7 +482,7 @@ def extract_entity_graph_data(db_type, host, port, user, password, database,
     try:
         nodes = []
         edges = []
-        MAX_NODES = 80
+        MAX_NODES = max_nodes
 
         # 1. Get table list
         if schema_name:
@@ -696,6 +696,66 @@ def extract_entity_graph_data(db_type, host, port, user, password, database,
                             "target_column": ref_col,
                         })
                 print(f"[FK DEBUG] Edges built so far: {len(edges)}, FK columns marked: {len(fk_columns)}")
+
+            # 4b. Analyze relationship types (1:1, 1:N, M:N)
+            # Group edges by source table
+            table_outgoing = {}
+            for edge in edges:
+                src = edge["source"]
+                table_outgoing.setdefault(src, []).append(edge)
+
+            # Detect junction tables: ≥2 FKs to different tables, ≥50% of columns are FKs
+            junction_tables = set()
+            for src_table, fks in table_outgoing.items():
+                ref_tables = set(e["target"] for e in fks)
+                if len(ref_tables) >= 2:
+                    s_parts = src_table.split(".", 1)
+                    if len(s_parts) == 2:
+                        s_schema, s_name = s_parts
+                        fk_cols = fk_columns.get((s_schema, s_name), set())
+                        total_cols = len(table_columns.get((s_schema, s_name), []))
+                        if total_cols > 0 and len(fk_cols) >= total_cols * 0.5:
+                            junction_tables.add(src_table)
+            print(f"[FK DEBUG] Junction tables detected: {junction_tables}")
+
+            # Build M:N virtual edges for junction tables, classify remaining as 1:N or 1:1
+            analyzed_edges = []
+            seen_m2m = set()
+            for junction in junction_tables:
+                fks = table_outgoing.get(junction, [])
+                ref_list = [(e["target"], e["source_column"], e["target_column"]) for e in fks]
+                j_short = junction.split(".", 1)[1] if "." in junction else junction
+                for i in range(len(ref_list)):
+                    for j in range(i + 1, len(ref_list)):
+                        t1, c1, rc1 = ref_list[i]
+                        t2, c2, rc2 = ref_list[j]
+                        m2m_key = tuple(sorted([t1, t2]))
+                        if m2m_key not in seen_m2m:
+                            seen_m2m.add(m2m_key)
+                            analyzed_edges.append({
+                                "id": f"m2m_{t1}_{t2}",
+                                "source": t1,
+                                "target": t2,
+                                "source_column": "",
+                                "target_column": "",
+                                "relationship_type": "M:N",
+                                "via_table": j_short,
+                            })
+
+            for edge in edges:
+                if edge["source"] in junction_tables:
+                    continue
+                src_parts = edge["source"].split(".", 1)
+                is_11 = False
+                if len(src_parts) == 2:
+                    pk_cols = pk_map.get((src_parts[0], src_parts[1]), set())
+                    is_11 = edge["source_column"] in pk_cols and len(pk_cols) <= 2
+                edge["relationship_type"] = "1:1" if is_11 else "1:N"
+                edge["via_table"] = None
+                analyzed_edges.append(edge)
+
+            edges = analyzed_edges
+            print(f"[FK DEBUG] Final edges: {len(edges)} (M:N={len(seen_m2m)}, junctions={len(junction_tables)})")
 
             # 5. Get enums (Postgres only)
             enum_map = {}
