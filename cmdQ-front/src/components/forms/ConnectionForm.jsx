@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { apiService } from '../../services/apiService';
 
-export default function ConnectionForm({ onConnected, onCancel }) {
+export default function ConnectionForm({ onConnected, onCancel, existingConnections = [] }) {
     const [dbConfig, setDbConfig] = useState({
         db_type: "postgres",
         host: "127.0.0.1",
@@ -28,9 +28,54 @@ export default function ConnectionForm({ onConnected, onCancel }) {
 
     const handleConfigChange = (e) => {
         setDbConfig({ ...dbConfig, [e.target.name]: e.target.value });
+        setErrorMsg("");
+    };
+
+    const isHostMatch = (h1, h2) => {
+        const a = (h1 || '').trim().toLowerCase();
+        const b = (h2 || '').trim().toLowerCase();
+        return a === b || (['localhost', '127.0.0.1'].includes(a) && ['localhost', '127.0.0.1'].includes(b));
+    };
+
+    const checkDuplicate = (isFinalStep = false) => {
+        const trimmedName = dbConfig.server_name?.trim();
+        if (trimmedName) {
+            const nameConflict = existingConnections.find(c =>
+                (c.config?.server_name && c.config.server_name.trim().toLowerCase() === trimmedName.toLowerCase()) ||
+                (c.id && c.id.toLowerCase() === trimmedName.toLowerCase())
+            );
+            if (nameConflict) {
+                return `A server named "${trimmedName}" is already registered. Please choose a unique server name.`;
+            }
+        }
+
+        if (isFinalStep) {
+            const endpointConflict = existingConnections.find(c =>
+                c.config?.db_type === dbConfig.db_type &&
+                isHostMatch(c.config?.host, dbConfig.host) &&
+                Number(c.config?.port) === Number(dbConfig.port) &&
+                (c.config?.user || '').trim().toLowerCase() === (dbConfig.user || '').trim().toLowerCase()
+            );
+            if (endpointConflict) {
+                const existingLabel = endpointConflict.config?.server_name || endpointConflict.id;
+                return `A connection to ${dbConfig.user}@${dbConfig.host}:${dbConfig.port} is already registered as "${existingLabel}".`;
+            }
+        }
+        return null;
     };
 
     const checkPort = async () => {
+        if (!dbConfig.host.trim() || !dbConfig.port) {
+            setErrorMsg("Host and port are required.");
+            return;
+        }
+
+        const dupError = checkDuplicate(false);
+        if (dupError) {
+            setErrorMsg(dupError);
+            return;
+        }
+
         setIsLoading(true);
         setErrorMsg("");
         try {
@@ -45,6 +90,17 @@ export default function ConnectionForm({ onConnected, onCancel }) {
     };
 
     const connectDb = async () => {
+        if (!dbConfig.user.trim()) {
+            setErrorMsg("Username is required.");
+            return;
+        }
+
+        const dupError = checkDuplicate(true);
+        if (dupError) {
+            setErrorMsg(dupError);
+            return;
+        }
+
         setIsLoading(true);
         setErrorMsg("");
         try {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { apiService } from '../../services/apiService';
 
-export default function ApiRegistrationForm({ onRegistered, onCancel, editModel }) {
+export default function ApiRegistrationForm({ onRegistered, onCancel, editModel, existingModels = [] }) {
     const [apiFormData, setApiFormData] = useState({
         id: editModel?.id || "",
         name: editModel?.name || "",
@@ -21,6 +21,16 @@ export default function ApiRegistrationForm({ onRegistered, onCancel, editModel 
             alert("Name, Model, and API Key are required.");
             return;
         }
+
+        if (!editModel) {
+            const trimmedName = apiFormData.name.trim().toLowerCase();
+            const nameConflict = existingModels.find(m => m.name && m.name.trim().toLowerCase() === trimmedName);
+            if (nameConflict) {
+                alert(`An API model named "${apiFormData.name.trim()}" is already registered. Please choose a different display name.`);
+                return;
+            }
+        }
+
         setIsLoading(true);
         try {
             const id = editModel ? editModel.id : `api_${Date.now()}`;

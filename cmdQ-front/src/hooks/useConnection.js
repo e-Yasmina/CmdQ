@@ -69,20 +69,37 @@ export function useConnection() {
   }, []);
 
   const handleConnected = useCallback(async (dbs, initialDb, config) => {
-    const newConnId = config.server_name || `${config.user}@${config.host}:${config.port}`;
-    let connExists = connections.find(c => c.id === newConnId);
+    const newConnId = config.server_name?.trim() || `${config.user}@${config.host}:${config.port}`;
+    const isHostMatch = (h1, h2) => {
+      const a = (h1 || '').trim().toLowerCase();
+      const b = (h2 || '').trim().toLowerCase();
+      return a === b || (['localhost', '127.0.0.1'].includes(a) && ['localhost', '127.0.0.1'].includes(b));
+    };
 
-    if (!connExists) {
-      const initialSchema = await fetchSchema(config);
-      const newConnection = {
-        id: newConnId,
-        config: config,
-        databases: dbs,
-        schemas: { [initialDb]: initialSchema }
-      };
-      setConnections(prev => [...prev, newConnection]);
-      storageService.saveItem('connections', newConnection).catch(err => console.error("Failed to save connection:", err));
+    const existingConn = connections.find(c =>
+      c.id === newConnId ||
+      (config.server_name?.trim() && c.config?.server_name?.trim().toLowerCase() === config.server_name.trim().toLowerCase()) ||
+      (c.config?.db_type === config.db_type && isHostMatch(c.config?.host, config.host) && Number(c.config?.port) === Number(config.port) && (c.config?.user || '').trim().toLowerCase() === (config.user || '').trim().toLowerCase())
+    );
+
+    if (existingConn) {
+      setActiveConnectionId(existingConn.id);
+      setActiveDatabase(initialDb || existingConn.databases?.[0] || "");
+      setActiveSchemaName(null);
+      setActiveTableName(null);
+      setShowConnectionForm(false);
+      return;
     }
+
+    const initialSchema = await fetchSchema(config);
+    const newConnection = {
+      id: newConnId,
+      config: config,
+      databases: dbs,
+      schemas: { [initialDb]: initialSchema }
+    };
+    setConnections(prev => [...prev, newConnection]);
+    storageService.saveItem('connections', newConnection).catch(err => console.error("Failed to save connection:", err));
 
     setActiveConnectionId(newConnId);
     setActiveDatabase(initialDb);

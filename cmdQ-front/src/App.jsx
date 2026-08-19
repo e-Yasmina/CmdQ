@@ -139,18 +139,37 @@ function App() {
 
   // --- Coordinator: handleConnected ---
   const handleConnected = useCallback(async (dbs, initialDb, config) => {
-    const newConnId = config.server_name || `${config.user}@${config.host}:${config.port}`;
-    let connExists = conn.connections.find(c => c.id === newConnId);
+    const newConnId = config.server_name?.trim() || `${config.user}@${config.host}:${config.port}`;
+    const isHostMatch = (h1, h2) => {
+      const a = (h1 || '').trim().toLowerCase();
+      const b = (h2 || '').trim().toLowerCase();
+      return a === b || (['localhost', '127.0.0.1'].includes(a) && ['localhost', '127.0.0.1'].includes(b));
+    };
 
-    if (!connExists) {
-      const initialSchema = await conn.fetchSchema(config);
-      const newConnection = {
-        id: newConnId, config, databases: dbs,
-        schemas: { [initialDb]: initialSchema },
-      };
-      conn.setConnections(prev => [...prev, newConnection]);
-      storageService.saveItem('connections', newConnection).catch(err => console.error("Failed to save connection:", err));
+    const existingConn = conn.connections.find(c =>
+      c.id === newConnId ||
+      (config.server_name?.trim() && c.config?.server_name?.trim().toLowerCase() === config.server_name.trim().toLowerCase()) ||
+      (c.config?.db_type === config.db_type && isHostMatch(c.config?.host, config.host) && Number(c.config?.port) === Number(config.port) && (c.config?.user || '').trim().toLowerCase() === (config.user || '').trim().toLowerCase())
+    );
+
+    if (existingConn) {
+      conn.setActiveConnectionId(existingConn.id);
+      conn.setActiveDatabase(initialDb || existingConn.databases?.[0] || "");
+      conn.setActiveSchemaName(null);
+      conn.setActiveTableName(null);
+      conn.setShowConnectionForm(false);
+      ai.setChatHistory([]);
+      analysis.setSqlResult(null);
+      return;
     }
+
+    const initialSchema = await conn.fetchSchema(config);
+    const newConnection = {
+      id: newConnId, config, databases: dbs,
+      schemas: { [initialDb]: initialSchema },
+    };
+    conn.setConnections(prev => [...prev, newConnection]);
+    storageService.saveItem('connections', newConnection).catch(err => console.error("Failed to save connection:", err));
 
     conn.setActiveConnectionId(newConnId);
     conn.setActiveDatabase(initialDb);
@@ -382,7 +401,20 @@ function App() {
   const handleServerActionConfirm = useCallback(async (data) => {
     const { type, server } = ui.serverActionModal;
     if (type === 'rename') {
-      const newName = data;
+      const newName = (data || '').trim();
+      if (!newName) {
+        alert("Server name cannot be empty.");
+        return;
+      }
+      const nameConflict = conn.connections.find(c =>
+        c.id !== server.id &&
+        ((c.config?.server_name && c.config.server_name.trim().toLowerCase() === newName.toLowerCase()) ||
+         (c.id && c.id.toLowerCase() === newName.toLowerCase()))
+      );
+      if (nameConflict) {
+        alert(`A server named "${newName}" already exists.`);
+        return;
+      }
       const updatedConn = { ...server, config: { ...server.config, server_name: newName } };
       conn.setConnections(prev => prev.map(c => c.id === server.id ? updatedConn : c));
       storageService.saveItem('connections', updatedConn);
@@ -553,6 +585,7 @@ function App() {
 
       {(conn.connections.length === 0 || conn.showConnectionForm) && (
         <ConnectionForm
+          existingConnections={conn.connections}
           onConnected={handleConnected}
           onCancel={conn.connections.length > 0 ? () => conn.setShowConnectionForm(false) : undefined}
         />
@@ -560,6 +593,7 @@ function App() {
 
       {ai.showApiModal && (
         <ApiRegistrationForm
+          existingModels={ai.registeredModels}
           onCancel={() => { ai.setShowApiModal(false); ai.setEditingModel(null); }}
           onRegistered={ai.handleApiRegistered}
           editModel={ai.editingModel}
@@ -765,6 +799,7 @@ function App() {
         <ServerActionModal
           type={ui.serverActionModal.type}
           server={ui.serverActionModal.server}
+          existingConnections={conn.connections}
           onClose={() => ui.setServerActionModal(null)}
           onConfirm={handleServerActionConfirm}
         />
