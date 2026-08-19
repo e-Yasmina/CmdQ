@@ -349,7 +349,9 @@ class TestQuery:
         body = resp.json()
         assert body["status"] == "success"
         assert "data" in body
+        assert "columns" in body
         assert isinstance(body["data"], list)
+        assert isinstance(body["columns"], list)
         assert "message" in body
 
     def test_missing_query(self, db_config):
@@ -379,7 +381,9 @@ class TestTableData:
         body = resp.json()
         assert body["status"] == "success"
         assert "data" in body
+        assert "columns" in body
         assert isinstance(body["data"], list)
+        assert isinstance(body["columns"], list)
 
     def test_with_pagination(self, db_config):
         resp = client.post("/table_data", json={

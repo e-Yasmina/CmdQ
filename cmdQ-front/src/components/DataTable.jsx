@@ -69,7 +69,8 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     const refTable = effectiveTable;
 
     const hasData = result?.data && result.data.length > 0;
-    const columns = hasData ? Object.keys(result.data[0]) : (result?.columns || []);
+    const rawColumns = hasData ? Object.keys(result.data[0]) : (result?.columns || []);
+    const columns = rawColumns.map(c => typeof c === 'object' && c !== null ? (c.name || c.column_name || JSON.stringify(c)) : String(c));
 
     const sortedData = useMemo(() => {
         if (!hasData || !sortConfig) return result?.data || [];
@@ -399,7 +400,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {(hasData || (result.isTableClick && columns.length > 0)) && (
+            {(hasData || columns.length > 0) && (
                 <div className="flex flex-col flex-1 min-h-[200px]">
                     {/* Toolbar row: row count + fullscreen + pagination */}
                     <div className="flex items-center justify-between mb-1.5 shrink-0 flex-wrap gap-2">
@@ -510,6 +511,16 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                                         </tr>
                                     );
                                 })}
+                                {paginatedData.length === 0 && !addingRow && (
+                                    <tr>
+                                        <td
+                                            colSpan={columns.length + (canMutate ? 1 : 0)}
+                                            className="p-8 text-center text-gray-500 italic text-xs border-b border-border/50 select-none"
+                                        >
+                                            No rows returned (empty table)
+                                        </td>
+                                    </tr>
+                                )}
                                 {addingRow && (
                                     <tr className="bg-primary/10 border-b border-primary/30">
                                         <td className="p-2 border-r border-border/50 text-center whitespace-nowrap">
@@ -632,7 +643,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 </div>
             )}
 
-            {!isFullScreen && !hasData && (result.extracted_sql || result.message) && (
+            {!isFullScreen && !hasData && columns.length === 0 && (result.extracted_sql || result.message) && (
                 <div className="flex flex-col items-center gap-3 mt-4 p-6 border border-dashed border-border rounded bg-panel/30">
                     <div className="text-gray-500 italic text-xs">Query executed successfully (0 rows returned).</div>
                     
@@ -649,6 +660,21 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                             </p>
                         </>
                     )}
+                </div>
+            )}
+
+            {!isFullScreen && !hasData && columns.length > 0 && (result.hasRls || (!result.isTableClick && refTable)) && onDiagnose && (
+                <div className="flex items-center justify-between gap-3 mt-2 p-3 border border-border/60 rounded bg-panel/20 text-xs">
+                    <div className="flex items-center gap-2 text-gray-400">
+                        <span>ℹ️ Empty table result.</span>
+                        <span className="text-[11px] text-gray-500">If data is expected, check if access is restricted by Row Level Security.</span>
+                    </div>
+                    <button 
+                        onClick={() => onDiagnose && onDiagnose(refSchema, refTable)}
+                        className="bg-cyan-500/10 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500 hover:text-black px-3 py-1 rounded text-xs font-bold transition-all shrink-0 flex items-center gap-1.5"
+                    >
+                        🔐 Diagnose Protection
+                    </button>
                 </div>
             )}
 

@@ -165,7 +165,7 @@ export function useAiPrompt() {
 
           const tableInfo = activeSchema?.[extracted.schema]?.[extracted.table];
           if (tableInfo?.constraints) data.constraints = tableInfo.constraints;
-          if (tableInfo?.columns) data.columns = tableInfo.columns;
+          if (tableInfo?.columns && (!data.columns || data.columns.length === 0)) data.columns = tableInfo.columns;
         }
       }
 

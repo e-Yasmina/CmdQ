@@ -191,14 +191,15 @@ function App() {
 
       const tableInfo = c.schemas[dbName]?.[schemaName]?.[tableName];
       const hasRls = tableInfo?.has_rls || false;
-      const columns = Array.isArray(tableInfo) ? tableInfo : (tableInfo?.columns || []);
+      const schemaColumns = Array.isArray(tableInfo) ? tableInfo : (tableInfo?.columns || []);
+      const columns = data.columns && data.columns.length > 0 ? data.columns : schemaColumns;
       const constraints = tableInfo?.constraints || [];
 
       analysis.setSqlResult({
         data: data.data || [],
         original_data: data.data ? JSON.parse(JSON.stringify(data.data)) : [],
         extracted_sql: `SELECT * FROM ${schemaName}.${tableName} LIMIT 100`,
-        message: `Fetched 100 rows from ${tableName}`,
+        message: `Fetched ${(data.data || []).length} rows from ${tableName}`,
         isTableClick: true, targetSchema: schemaName, targetTable: tableName,
         hasRls, columns, constraints,
       });

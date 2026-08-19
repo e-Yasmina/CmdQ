@@ -390,11 +390,16 @@ async def ai_prompt(payload: AIPrompt):
             except Exception as cli_err:
                 output = f"CLI Error: {mask_password(str(cli_err))}"
 
+        extracted_columns = []
+        if 'sql_result' in locals() and hasattr(sql_result, 'columns'):
+            extracted_columns = sql_result.columns
+
         return {
             "status": "success",
             "message": output,
             "extracted_sql": extracted_sql,
-            "data": execution_results
+            "data": execution_results,
+            "columns": extracted_columns,
         }
 
     except HTTPException:

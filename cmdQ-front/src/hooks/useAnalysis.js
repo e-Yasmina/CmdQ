@@ -57,6 +57,7 @@ export function useAnalysis() {
 
       setSqlResult({
         data: data.data || [],
+        columns: data.columns || (data.data?.length > 0 ? Object.keys(data.data[0]) : []),
         original_data: data.data ? JSON.parse(JSON.stringify(data.data)) : [],
         message: data.message,
         extracted_sql: queryText,

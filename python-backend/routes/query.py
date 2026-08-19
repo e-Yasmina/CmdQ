@@ -28,8 +28,20 @@ async def execute_query(req: QueryRequest):
         query_upper = req.query.strip().upper()
         is_dml = query_upper.startswith("UPDATE") or query_upper.startswith("DELETE")
         if is_dml and result.rowcount == 0:
-            return {"status": "warning", "data": rows, "rows_affected": 0, "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."}
-        return {"status": "success", "data": rows, "rows_affected": result.rowcount, "message": "Query executed successfully."}
+            return {
+                "status": "warning",
+                "data": rows,
+                "columns": result.columns,
+                "rows_affected": 0,
+                "message": "Query executed but 0 rows were affected. The row may have changed since it was fetched, or the WHERE clause did not match."
+            }
+        return {
+            "status": "success",
+            "data": rows,
+            "columns": result.columns,
+            "rows_affected": result.rowcount,
+            "message": "Query executed successfully."
+        }
     except Exception as e:
         return {"status": "error", "message": f"Query Failed: {mask_password(str(e))}"}
 
@@ -56,6 +68,6 @@ async def get_table_data(req: TableDataRequest):
             {k: str(v) if v is not None else None for k, v in row.items()}
             for row in result.rows
         ]
-        return {"status": "success", "data": rows}
+        return {"status": "success", "data": rows, "columns": result.columns}
     except Exception as e:
         return {"status": "error", "message": f"Failed to fetch table data: {mask_password(str(e))}"}

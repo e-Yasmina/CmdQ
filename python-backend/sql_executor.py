@@ -12,8 +12,9 @@ logger = logging.getLogger("cmdq-backend")
 class SqlResult:
     """Standardized result container from SQL execution."""
 
-    def __init__(self, rows=None, rowcount=0, returns_rows=False, error=None):
+    def __init__(self, rows=None, columns=None, rowcount=0, returns_rows=False, error=None):
         self.rows = rows or []
+        self.columns = columns or []
         self.rowcount = rowcount
         self.returns_rows = returns_rows
         self.error = error
@@ -98,7 +99,7 @@ class SqlExecutor:
                             dict(zip(keys, row))
                             for row in result.fetchall()
                         ]
-                    return SqlResult(rows=rows, rowcount=rowcount, returns_rows=True)
+                    return SqlResult(rows=rows, columns=keys, rowcount=rowcount, returns_rows=True)
                 return SqlResult(rowcount=rowcount)
 
         except MemoryError:
