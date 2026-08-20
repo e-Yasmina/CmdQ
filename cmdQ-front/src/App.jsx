@@ -522,7 +522,8 @@ function App() {
         return;
       }
       if (shortcutService.matches(e, ui.shortcuts['undo-mutation'])) {
-        if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        const isEditable = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable || e.target.closest?.('.cm-editor') || e.target.closest?.('.cm-content');
+        if (!isEditable) {
           e.preventDefault();
           analysis.handleUndoMutation();
         }

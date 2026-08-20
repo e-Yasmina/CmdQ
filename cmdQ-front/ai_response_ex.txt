@@ -1,0 +1,58 @@
+[Step 0] (human):
+what are the big gap of security that I have in my database
+
+---
+
+[Step 1] (ai):
+Based on a high-level review of the database schema structure, here are the key security considerations and best practices to harden your PostgreSQL database against potential vulnerabilities:
+
+---
+
+### 1. Row Level Security (RLS)
+* **Observation:** Row Level Security is currently disabled (`has_rls: false`) across the tables in the `public` schema.
+* **Risk:** Any application user or connection string accessing the database operates with full table-level visibility. If an application-level access control bug occurs, a user might access records belonging to other employees or candidates.
+* **Recommendation:** Enable Row Level Security (RLS) on sensitive tables (`employee`, `app_user`, `candidate`, `absence`, `bonuses`). Define policies so that users/roles can only query rows they are explicitly authorized to view or edit.
+
+```sql
+-- Example: Enabling RLS on a table
+ALTER TABLE app_user ENABLE ROW LEVEL SECURITY;
+```
+
+---
+
+### 2. Protection of Personally Identifiable Information (PII) & Financial Data
+* **Observation:** Tables store sensitive PII (such as CIN numbers, phone numbers, ages, full candidate descriptions) and sensitive financial details (`bonuses`).
+* **Risk:** Plaintext storage of sensitive identity and financial fields increases exposure in the event of database dumps or unauthorized read access.
+* **Recommendation:**
+  * Use field-level encryption (e.g., PostgreSQL `pgcrypto` extension) for high-sensitivity columns (like national ID / CIN).
+  * Ensure full database storage volume encryption (at-rest encryption) is enabled on your host or managed database instance.
+
+---
+
+### 3. Authentication & Password / Token Security
+* **Observation:** The `app_user` table manages `password`, `reset_token`, and `reset_token_expiry`.
+* **Risk:** Insecure storage of credentials or password reset tokens can lead to account takeover if token values are predictable, unhashed, or remain valid indefinitely.
+* **Recommendation:**
+  * Ensure passwords are hashed using strong, adaptive hashing functions (e.g., **bcrypt**, **Argon2id**, or **PBKDF2** with a unique salt per password).
+  * Store hashed hashes or short-lived cryptographically secure random values for `reset_token`. Ensure tokens are invalidated immediately upon use or expiration.
+
+---
+
+### 4. Principle of Least Privilege (Database Roles & Permissions)
+* **Observation:** Application entities reside entirely in the `public` schema.
+* **Risk:** If the backend application connects using the schema owner or superuser, SQL injection or backend compromised credentials would allow full DDL/DML access across all tables.
+* **Recommendation:**
+  * Create dedicated database roles for application runtimes with minimal required permissions (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) rather than using owner/superuser accounts.
+  * Revoke default public permissions on sensitive tables where appropriate.
+
+---
+
+### 5. Comprehensive Audit Logging
+* **Observation:** The database contains an `audit_log` table managed by application logic.
+* **Risk:** Direct database access or application bypasses might not be captured if auditing relies solely on application code.
+* **Recommendation:**
+  * Implement database-level auditing extensions like `pgaudit` to capture structural changes (DDL), permission modifications, and critical data accesses directly at the PostgreSQL engine level.
+
+---
+
+__CMDQ_DONE__

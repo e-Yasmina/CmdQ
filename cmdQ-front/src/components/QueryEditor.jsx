@@ -13,6 +13,12 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
             e.preventDefault();
             onExecuteQuery(value);
         }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            if (value.trim()) {
+                setShowSaveModal(true);
+            }
+        }
         if (e.key === 'F5') {
             e.preventDefault();
             onExecuteQuery(value);

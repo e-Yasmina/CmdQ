@@ -4,6 +4,7 @@ import { apiService } from '../services/apiService';
 import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
 import SaveFileDialog from './SaveFileDialog';
+import { CopyIcon } from './icons/CopyIcon';
 
 const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_$]{0,127}$/;
 
@@ -41,6 +42,8 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(100);
     const [sortConfig, setSortConfig] = useState(null); // { key, direction: 'asc' | 'desc' }
+    const [messageCopied, setMessageCopied] = useState(false);
+    const [sqlCopied, setSqlCopied] = useState(false);
 
     useEffect(() => {
         setMutationError("");
@@ -588,35 +591,75 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
             )}
 
             {!isFullScreen && result.message && (
-              <ScrollArea className="max-h-48 overflow-y-auto mt-2 border border-border rounded bg-background shrink-0">
-                <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3">
-                  {(() => {
-                    const parts = result.message.split(/(```[\w]*\n[\s\S]*?```)/g);
-                    return parts.map((part, i) => {
-                      const codeMatch = part.match(/^```(\w*)\n([\s\S]*?)```$/);
-                      if (codeMatch) {
-                        const lang = codeMatch[1] || 'text';
-                        const code = codeMatch[2];
-                        return (
-                          <div key={i} className="my-2">
-                            <div className="bg-black/40 rounded-t border border-border/50 px-3 py-1 text-[10px] text-gray-500 uppercase flex justify-between items-center">
-                              <span>{lang}</span>
-                              <button
-                                onClick={() => setSaveDialog({ content: code, filename: `code_block_${i}.${lang || 'txt'}` })}
-                                className="text-cyan-400 hover:text-cyan-300 transition-colors font-bold"
-                              >
-                                Save to file
-                              </button>
-                            </div>
-                            <pre className="bg-black/60 rounded-b border border-t-0 border-border/50 p-2 text-xs text-gray-300 overflow-x-auto">{code}</pre>
-                          </div>
-                        );
-                      }
-                      return <span key={i}>{part}</span>;
-                    });
-                  })()}
+              <div className="mt-2 shrink-0">
+                <div className="flex justify-between items-center mb-1 text-[11px] text-gray-500 font-bold uppercase tracking-wider">
+                  <span>AI Message & Output</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(result.message);
+                      setMessageCopied(true);
+                      setTimeout(() => setMessageCopied(false), 2000);
+                    }}
+                    className="text-[10px] text-gray-400 hover:text-primary transition-colors flex items-center gap-1 cursor-pointer bg-transparent hover:bg-white/5 px-1.5 py-0.5 rounded"
+                    title="Copy AI Message"
+                  >
+                    {messageCopied ? (
+                      <>
+                        <svg className="w-3 h-3 text-emerald-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <CopyIcon className="w-3 h-3" />
+                        <span>Copy Text</span>
+                      </>
+                    )}
+                  </button>
                 </div>
-              </ScrollArea>
+                <ScrollArea
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const range = document.createRange();
+                      range.selectNodeContents(e.currentTarget);
+                      const sel = window.getSelection();
+                      sel.removeAllRanges();
+                      sel.addRange(range);
+                    }
+                  }}
+                  className="max-h-48 overflow-y-auto border border-border rounded bg-background select-text outline-none focus:ring-1 focus:ring-primary/40"
+                >
+                  <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3 select-text">
+                    {(() => {
+                      const parts = result.message.split(/(```[\w]*\n[\s\S]*?```)/g);
+                      return parts.map((part, i) => {
+                        const codeMatch = part.match(/^```(\w*)\n([\s\S]*?)```$/);
+                        if (codeMatch) {
+                          const lang = codeMatch[1] || 'text';
+                          const code = codeMatch[2];
+                          return (
+                            <div key={i} className="my-2 select-text">
+                              <div className="bg-black/40 rounded-t border border-border/50 px-3 py-1 text-[10px] text-gray-500 uppercase flex justify-between items-center">
+                                <span>{lang}</span>
+                                <button
+                                  onClick={() => setSaveDialog({ content: code, filename: `code_block_${i}.${lang || 'txt'}` })}
+                                  className="text-cyan-400 hover:text-cyan-300 transition-colors font-bold"
+                                >
+                                  Save to file
+                                </button>
+                              </div>
+                              <pre className="bg-black/60 rounded-b border border-t-0 border-border/50 p-2 text-xs text-gray-300 overflow-x-auto select-text">{code}</pre>
+                            </div>
+                          );
+                        }
+                        return <span key={i} className="select-text">{part}</span>;
+                      });
+                    })()}
+                  </div>
+                </ScrollArea>
+              </div>
             )}
 
             {saveDialog && (
@@ -629,15 +672,52 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
 
             {!isFullScreen && result.extracted_sql && (
                 <div className="mt-2 shrink-0">
-                    <strong className="text-primary text-xs uppercase flex items-center gap-2">
-                        Executed SQL
-                        {canMutate && (
-                            <span className="text-gray-500 text-[10px] font-normal normal-case">
-                                (Double-click cells to edit)
-                            </span>
-                        )}
-                    </strong>
-                    <div className="text-gray-300 font-code text-xs bg-black/50 p-2 rounded mt-1 border border-border/50 h-max max-h-24 overflow-y-auto">
+                    <div className="flex justify-between items-center mb-1">
+                        <strong className="text-primary text-xs uppercase flex items-center gap-2">
+                            Executed SQL
+                            {canMutate && (
+                                <span className="text-gray-500 text-[10px] font-normal normal-case">
+                                    (Double-click cells to edit)
+                                </span>
+                            )}
+                        </strong>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(result.extracted_sql);
+                            setSqlCopied(true);
+                            setTimeout(() => setSqlCopied(false), 2000);
+                          }}
+                          className="text-[10px] text-gray-400 hover:text-primary transition-colors flex items-center gap-1 cursor-pointer bg-transparent hover:bg-white/5 px-1.5 py-0.5 rounded"
+                          title="Copy Executed SQL"
+                        >
+                          {sqlCopied ? (
+                            <>
+                              <svg className="w-3 h-3 text-emerald-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                              <span className="text-emerald-400">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <CopyIcon className="w-3 h-3" />
+                              <span>Copy SQL</span>
+                            </>
+                          )}
+                        </button>
+                    </div>
+                    <div
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const range = document.createRange();
+                                range.selectNodeContents(e.currentTarget);
+                                const sel = window.getSelection();
+                                sel.removeAllRanges();
+                                sel.addRange(range);
+                            }
+                        }}
+                        className="text-gray-300 font-code text-xs bg-black/50 p-2 rounded mt-1 border border-border/50 h-max max-h-24 overflow-y-auto select-text outline-none focus:ring-1 focus:ring-primary/40"
+                    >
                         {result.extracted_sql}
                     </div>
                 </div>

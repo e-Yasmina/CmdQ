@@ -1,4 +1,6 @@
+import React, { useRef, useState } from 'react';
 import ScrollArea from '../ScrollArea';
+import { CopyIcon } from '../icons/CopyIcon';
 
 export default function AiPanel({
   topPanelHeight, startResizingTopPanel, activeConfig, chatHistory,
@@ -8,6 +10,33 @@ export default function AiPanel({
   handleFileAttach, handlePromptChange, launchCli,
   setSelectedTable, setSelectedAction, renderMessageContent,
 }) {
+  const conversationRef = useRef(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleSelectAll = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (conversationRef.current) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        const range = document.createRange();
+        range.selectNodeContents(conversationRef.current);
+        sel.addRange(range);
+      }
+    }
+  };
+
+  const handleCopyAll = (e) => {
+    e.stopPropagation();
+    if (!chatHistory || chatHistory.length === 0) return;
+    const text = chatHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}:\n${m.content}`).join('\n\n');
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
   return (
     <div
       style={{ height: `${topPanelHeight}px` }}
@@ -17,17 +46,45 @@ export default function AiPanel({
         className="h-1 cursor-row-resize hover:bg-primary/50 transition-colors z-[60] absolute left-0 right-0 bottom-0"
         onMouseDown={startResizingTopPanel}
       />
-      <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
-        <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
-        {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
-        {chatHistory.map((msg, i) => (
-          <div key={i} className={`mb-1 whitespace-pre-wrap ${msg.role === 'user' ? 'text-primary font-bold' : 'text-gray-400'}`}>
-            <span className="opacity-50 inline-block mr-1 align-top">{msg.role === 'user' ? '>' : '#'}</span>
-            <div className="inline-block" style={{ width: 'calc(100% - 20px)' }}>
-              {msg.role === 'user' ? msg.content : renderMessageContent(msg.content)}
+      <div className="flex justify-between items-center mb-1 shrink-0">
+        <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Conversation History</span>
+        {chatHistory.length > 0 && (
+          <button
+            onClick={handleCopyAll}
+            className="text-[10px] text-gray-400 hover:text-primary transition-colors flex items-center gap-1 cursor-pointer bg-transparent hover:bg-white/5 px-1.5 py-0.5 rounded"
+            title="Copy entire conversation"
+          >
+            {copied ? (
+              <>
+                <svg className="w-3 h-3 text-emerald-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                <span className="text-emerald-400">Copied</span>
+              </>
+            ) : (
+              <>
+                <CopyIcon className="w-3 h-3" />
+                <span>Copy All</span>
+              </>
+            )}
+          </button>
+        )}
+      </div>
+      <ScrollArea
+        tabIndex={0}
+        onKeyDown={handleSelectAll}
+        className="font-code text-sm overflow-y-auto flex-1 mb-2 select-text outline-none focus:ring-1 focus:ring-primary/40 rounded p-1"
+      >
+        <div ref={conversationRef} className="select-text">
+          <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
+          {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
+          {chatHistory.map((msg, i) => (
+            <div key={i} className={`mb-1 whitespace-pre-wrap select-text ${msg.role === 'user' ? 'text-primary font-bold' : 'text-gray-400'}`}>
+              <span className="opacity-50 inline-block mr-1 align-top">{msg.role === 'user' ? '>' : '#'}</span>
+              <div className="inline-block select-text" style={{ width: 'calc(100% - 20px)' }}>
+                {msg.role === 'user' ? msg.content : renderMessageContent(msg.content)}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </ScrollArea>
 
       <div className="flex flex-col border-t border-border pt-2 flex-shrink-0 relative">
