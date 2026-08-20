@@ -77,9 +77,9 @@ export default function AiPanel({
           <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
           {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
           {chatHistory.map((msg, i) => (
-            <div key={i} className={`mb-1 whitespace-pre-wrap select-text ${msg.role === 'user' ? 'text-primary font-bold' : 'text-gray-400'}`}>
+            <div key={i} className={`mb-2 select-text ${msg.role === 'user' ? 'text-primary font-bold whitespace-pre-wrap' : 'text-gray-300'}`}>
               <span className="opacity-50 inline-block mr-1 align-top">{msg.role === 'user' ? '>' : '#'}</span>
-              <div className="inline-block select-text" style={{ width: 'calc(100% - 20px)' }}>
+              <div className="inline-block select-text align-top" style={{ width: 'calc(100% - 20px)' }}>
                 {msg.role === 'user' ? msg.content : renderMessageContent(msg.content)}
               </div>
             </div>

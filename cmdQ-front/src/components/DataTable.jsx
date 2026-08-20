@@ -5,6 +5,7 @@ import ExportForm from './forms/ExportForm';
 import ImportForm from './forms/ImportForm';
 import SaveFileDialog from './SaveFileDialog';
 import { CopyIcon } from './icons/CopyIcon';
+import AiMessageRenderer from './AiMessageRenderer';
 
 const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_$]{0,127}$/;
 
@@ -631,32 +632,8 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                   }}
                   className="max-h-48 overflow-y-auto border border-border rounded bg-background select-text outline-none focus:ring-1 focus:ring-primary/40"
                 >
-                  <div className="text-secondary whitespace-pre-wrap font-code text-xs p-3 select-text">
-                    {(() => {
-                      const parts = result.message.split(/(```[\w]*\n[\s\S]*?```)/g);
-                      return parts.map((part, i) => {
-                        const codeMatch = part.match(/^```(\w*)\n([\s\S]*?)```$/);
-                        if (codeMatch) {
-                          const lang = codeMatch[1] || 'text';
-                          const code = codeMatch[2];
-                          return (
-                            <div key={i} className="my-2 select-text">
-                              <div className="bg-black/40 rounded-t border border-border/50 px-3 py-1 text-[10px] text-gray-500 uppercase flex justify-between items-center">
-                                <span>{lang}</span>
-                                <button
-                                  onClick={() => setSaveDialog({ content: code, filename: `code_block_${i}.${lang || 'txt'}` })}
-                                  className="text-cyan-400 hover:text-cyan-300 transition-colors font-bold"
-                                >
-                                  Save to file
-                                </button>
-                              </div>
-                              <pre className="bg-black/60 rounded-b border border-t-0 border-border/50 p-2 text-xs text-gray-300 overflow-x-auto select-text">{code}</pre>
-                            </div>
-                          );
-                        }
-                        return <span key={i} className="select-text">{part}</span>;
-                      });
-                    })()}
+                  <div className="p-3 select-text">
+                    <AiMessageRenderer content={result.message} />
                   </div>
                 </ScrollArea>
               </div>

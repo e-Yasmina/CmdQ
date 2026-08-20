@@ -18,6 +18,7 @@ import MainHeader from './components/layout/MainHeader';
 import AiPanel from './components/layout/AiPanel';
 import QueryPanel from './components/layout/QueryPanel';
 import ResultsPanel from './components/layout/ResultsPanel';
+import AiMessageRenderer from './components/AiMessageRenderer';
 import { apiService } from './services/apiService';
 import { storageService } from './services/storageService';
 import { shortcutService } from './services/shortcutService';
@@ -456,42 +457,13 @@ function App() {
 
   // --- renderMessageContent ---
   const renderMessageContent = useCallback((content) => {
-    const paragraphs = content.split('\n\n');
-    const processParagraphs = [];
-    const resultParagraphs = [];
-    let isProcess = true;
-    for (const p of paragraphs) {
-      const pLower = p.toLowerCase();
-      if (p.startsWith('```') || pLower.includes('here is') || pLower.includes('to determine') || pLower.includes('the answer') || pLower.includes('you can execute')) {
-        isProcess = false;
-      }
-      if (isProcess && (p.startsWith('#') || pLower.includes('i will ') || pLower.includes('let me ') || pLower.includes("let's "))) {
-        processParagraphs.push(p);
-      } else {
-        isProcess = false;
-        resultParagraphs.push(p);
-      }
-    }
-
-    if (processParagraphs.length > 0 && resultParagraphs.length > 0) {
-      return (
-        <div className="flex flex-col gap-2 w-full mt-1">
-          <details className="text-gray-500 text-[11px] group">
-            <summary className="cursor-pointer font-bold opacity-70 hover:opacity-100 transition-opacity list-none flex items-center gap-1 w-max">
-              <span className="group-open:rotate-90 transition-transform flex items-center justify-center text-gray-500">
-                <svg className="w-2.5 h-2.5" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
-              </span> View Agent Process
-            </summary>
-            <div className="mt-2 pl-3 border-l-2 border-border/50 font-sans text-gray-400">
-              {processParagraphs.join('\n\n')}
-            </div>
-          </details>
-          <div className="whitespace-pre-wrap">{resultParagraphs.join('\n\n')}</div>
-        </div>
-      );
-    }
-    return <span className="whitespace-pre-wrap">{content}</span>;
-  }, []);
+    return (
+      <AiMessageRenderer
+        content={content}
+        onExecuteSql={(sql) => analysis.executeManualQuery(sql, conn.activeConfig)}
+      />
+    );
+  }, [analysis, conn.activeConfig]);
 
   // --- Keyboard shortcuts effect ---
   useEffect(() => {

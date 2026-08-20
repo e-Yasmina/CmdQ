@@ -141,7 +141,7 @@ export default function PerformanceAnalysisViewer({ result }) {
                                 li: ({ node, ...props }) => <li className="" {...props} />,
                                 strong: ({ node, ...props }) => <strong className="font-bold text-textPrimary" {...props} />,
                                 em: ({ node, ...props }) => <em className="italic text-gray-400" {...props} />,
-                                code: ({ node, inline, ...props }) => inline ? <code className="bg-black/30 text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono" {...props} /> : <pre className="bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-400"><code {...props} /></pre>,
+                                code: ({ node, className, children, ...props }) => (!className && !String(children).includes('\n')) ? <code className="bg-black/30 text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono inline" {...props}>{children}</code> : <pre className="bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-400"><code {...props}>{children}</code></pre>,
                             }}
                         >
                             {ai_summary}
