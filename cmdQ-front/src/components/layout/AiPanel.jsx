@@ -1,17 +1,32 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import ScrollArea from '../ScrollArea';
 import { CopyIcon } from '../icons/CopyIcon';
 
 export default function AiPanel({
   topPanelHeight, startResizingTopPanel, activeConfig, chatHistory,
   attachedFile, showTableMention, filteredTableMentions, selectedTable,
-  selectedAction, prompt, fileInputRef,
+  selectedAction, prompt, fileInputRef, historyIndex,
   setAttachedFile, handleTableMentionSelect, handleActionSelect,
-  handleFileAttach, handlePromptChange, launchCli,
+  handleFileAttach, handlePromptChange, handlePromptKeyDown, launchCli,
   setSelectedTable, setSelectedAction, renderMessageContent,
 }) {
   const conversationRef = useRef(null);
+  const inputRef = useRef(null);
   const [copied, setCopied] = useState(false);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+
+  useEffect(() => {
+    if (showTableMention) {
+      setActiveMentionIndex(0);
+    }
+  }, [showTableMention]);
+
+  useEffect(() => {
+    if (inputRef.current && historyIndex !== undefined && historyIndex !== -1) {
+      const len = inputRef.current.value.length;
+      inputRef.current.setSelectionRange(len, len);
+    }
+  }, [prompt, historyIndex]);
 
   const handleSelectAll = (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
@@ -98,11 +113,13 @@ export default function AiPanel({
 
         {showTableMention && filteredTableMentions.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 mb-1 mx-1 max-h-40 overflow-y-auto bg-panel border border-border rounded shadow-lg z-50">
-            {filteredTableMentions.map(t => (
+            {filteredTableMentions.map((t, idx) => (
               <div
                 key={t}
                 onClick={() => handleTableMentionSelect(t)}
-                className="px-3 py-1.5 text-xs text-textPrimary hover:bg-primary/20 cursor-pointer font-code truncate"
+                className={`px-3 py-1.5 text-xs text-textPrimary cursor-pointer font-code truncate ${
+                  activeMentionIndex === idx ? 'bg-primary/30 font-bold' : 'hover:bg-primary/20'
+                }`}
               >{t}</div>
             ))}
           </div>
@@ -140,10 +157,22 @@ export default function AiPanel({
           >📎</button>
           <div className="flex-1 relative">
             <input
+              ref={inputRef}
               type="text"
               value={prompt}
               onChange={handlePromptChange}
-              onKeyDown={(e) => { if (e.key === 'Enter') launchCli(); }}
+              onKeyDown={(e) => {
+                if (handlePromptKeyDown) {
+                  handlePromptKeyDown(e, {
+                    onEnter: launchCli,
+                    filteredTableMentions,
+                    activeMentionIndex,
+                    setActiveMentionIndex
+                  });
+                } else if (e.key === 'Enter') {
+                  launchCli();
+                }
+              }}
               disabled={!activeConfig}
               placeholder={activeConfig ? "type your command here... (e.g. 'Seed @public.users with 50 rows') and press Enter" : "Connect to a database first..."}
               className="w-full bg-transparent border-none focus:outline-none font-code text-sm text-textPrimary disabled:opacity-50"

@@ -51,7 +51,7 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
                 </div>
             </div>
             <div
-                className="flex-1 border border-border rounded overflow-hidden flex flex-col focus-within:border-primary transition-colors bg-background"
+                className="flex-1 border border-border rounded overflow-x-hidden overflow-y-auto scrollbar-hidden flex flex-col focus-within:border-primary transition-colors bg-background"
                 onKeyDown={handleKeyDown}
             >
                 <CodeMirror

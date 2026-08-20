@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { apiService } from '../services/apiService';
 
 export function useAiPrompt() {
@@ -7,6 +7,9 @@ export function useAiPrompt() {
   const [selectedCli, setSelectedCli] = useState("");
   const [customCliCommand, setCustomCliCommand] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
+  const [promptHistory, setPromptHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [draftPrompt, setDraftPrompt] = useState("");
   const [selectedTable, setSelectedTable] = useState([]);
   const [selectedAction, setSelectedAction] = useState("");
   const [showTableMention, setShowTableMention] = useState(false);
@@ -16,6 +19,18 @@ export function useAiPrompt() {
   const [editingModel, setEditingModel] = useState(null);
   const [showApiModal, setShowApiModal] = useState(false);
   const [fileInputRef] = useState(() => ({ current: null }));
+
+  const userHistory = useMemo(() => {
+    const chatPrompts = chatHistory.filter(m => m.role === 'user').map(m => m.content);
+    const combined = [...chatPrompts, ...promptHistory];
+    const uniqueInSequence = [];
+    for (const p of combined) {
+      if (p && typeof p === 'string' && (uniqueInSequence.length === 0 || uniqueInSequence[uniqueInSequence.length - 1] !== p)) {
+        uniqueInSequence.push(p);
+      }
+    }
+    return uniqueInSequence;
+  }, [chatHistory, promptHistory]);
 
   const extractTableMentions = useCallback((text) => {
     if (!text) return [];
@@ -27,6 +42,7 @@ export function useAiPrompt() {
   const handlePromptChange = useCallback((e, tableList) => {
     const newValue = e.target.value;
     setPrompt(newValue);
+    setHistoryIndex(-1);
 
     const mentions = extractTableMentions(newValue);
     setSelectedTable(mentions);
@@ -57,6 +73,80 @@ export function useAiPrompt() {
     setSelectedTable(mentions);
     setShowTableMention(false);
   }, [extractTableMentions]);
+
+  const handlePromptKeyDown = useCallback((e, { onEnter, filteredTableMentions, activeMentionIndex, setActiveMentionIndex } = {}) => {
+    // If table mentions popup is active
+    if (showTableMention && filteredTableMentions && filteredTableMentions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (setActiveMentionIndex) setActiveMentionIndex(prev => (prev + 1) % filteredTableMentions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (setActiveMentionIndex) setActiveMentionIndex(prev => (prev - 1 + filteredTableMentions.length) % filteredTableMentions.length);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && activeMentionIndex >= 0)) {
+        e.preventDefault();
+        const selected = filteredTableMentions[activeMentionIndex] || filteredTableMentions[0];
+        if (selected) {
+          handleTableMentionSelect(selected);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        setShowTableMention(false);
+        return;
+      }
+    }
+
+    // Normal terminal CLI arrow history navigation
+    if (e.key === 'ArrowUp') {
+      if (userHistory.length === 0) return;
+      e.preventDefault();
+      let nextIndex;
+      if (historyIndex === -1) {
+        setDraftPrompt(prompt);
+        nextIndex = userHistory.length - 1;
+      } else if (historyIndex > 0) {
+        nextIndex = historyIndex - 1;
+      } else {
+        nextIndex = 0;
+      }
+      setHistoryIndex(nextIndex);
+      const targetPrompt = userHistory[nextIndex] || '';
+      setPrompt(targetPrompt);
+      const mentions = extractTableMentions(targetPrompt);
+      setSelectedTable(mentions);
+      setShowTableMention(false);
+    } else if (e.key === 'ArrowDown') {
+      if (historyIndex === -1) return;
+      e.preventDefault();
+      if (historyIndex < userHistory.length - 1) {
+        const nextIndex = historyIndex + 1;
+        setHistoryIndex(nextIndex);
+        const targetPrompt = userHistory[nextIndex] || '';
+        setPrompt(targetPrompt);
+        const mentions = extractTableMentions(targetPrompt);
+        setSelectedTable(mentions);
+        setShowTableMention(false);
+      } else {
+        setHistoryIndex(-1);
+        setPrompt(draftPrompt);
+        const mentions = extractTableMentions(draftPrompt);
+        setSelectedTable(mentions);
+        setShowTableMention(false);
+      }
+    } else if (e.key === 'Enter') {
+      if (prompt && prompt.trim()) {
+        setPromptHistory(prev => [...prev, prompt]);
+      }
+      setHistoryIndex(-1);
+      setDraftPrompt("");
+      if (onEnter) onEnter();
+    }
+  }, [showTableMention, userHistory, historyIndex, prompt, draftPrompt, extractTableMentions, handleTableMentionSelect]);
 
   const handleActionSelect = useCallback((action) => {
     setSelectedAction(prev => prev === action ? "" : action);
@@ -179,6 +269,9 @@ export function useAiPrompt() {
         { role: "user", content: prompt },
         { role: "assistant", content: data.message || "Action completed." }
       ]);
+      setPromptHistory(prev => (prompt && prompt.trim() ? [...prev, prompt] : prev));
+      setHistoryIndex(-1);
+      setDraftPrompt("");
       setPromptOuter("");
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -196,6 +289,8 @@ export function useAiPrompt() {
     selectedCli, setSelectedCli,
     customCliCommand, setCustomCliCommand,
     chatHistory, setChatHistory,
+    promptHistory, setPromptHistory,
+    historyIndex, setHistoryIndex,
     selectedTable, setSelectedTable,
     selectedAction, setSelectedAction,
     showTableMention, setShowTableMention,
@@ -207,6 +302,7 @@ export function useAiPrompt() {
     fileInputRef,
     extractTableMentions,
     handlePromptChange, handleTableMentionSelect,
+    handlePromptKeyDown,
     handleActionSelect, fetchClis, fetchRegisteredModels,
     handleApiRegistered, handleEditModel, handleDeleteModel,
     handleDebugLaunch, launchCli,

@@ -27,6 +27,7 @@ import { useTabs } from './hooks/useTabs';
 import { useAiPrompt } from './hooks/useAiPrompt';
 import { useAnalysis } from './hooks/useAnalysis';
 import { useUI } from './hooks/useUI';
+import "./App.css";
 
 function App() {
   const conn = useConnection();
@@ -410,7 +411,7 @@ function App() {
       const nameConflict = conn.connections.find(c =>
         c.id !== server.id &&
         ((c.config?.server_name && c.config.server_name.trim().toLowerCase() === newName.toLowerCase()) ||
-         (c.id && c.id.toLowerCase() === newName.toLowerCase()))
+          (c.id && c.id.toLowerCase() === newName.toLowerCase()))
       );
       if (nameConflict) {
         alert(`A server named "${newName}" already exists.`);
@@ -648,11 +649,13 @@ function App() {
             selectedAction={ai.selectedAction}
             prompt={ai.prompt}
             fileInputRef={ai.fileInputRef}
+            historyIndex={ai.historyIndex}
             setAttachedFile={ai.setAttachedFile}
             handleTableMentionSelect={ai.handleTableMentionSelect}
             handleActionSelect={ai.handleActionSelect}
             handleFileAttach={handleFileAttach}
             handlePromptChange={handlePromptChange}
+            handlePromptKeyDown={ai.handlePromptKeyDown}
             launchCli={launchCli}
             setSelectedTable={ai.setSelectedTable}
             setSelectedAction={ai.setSelectedAction}
@@ -826,14 +829,16 @@ function App() {
           { id: 'sum-analysis', name: 'Run Summary Analysis', category: 'Analysis', icon: '📝', action: () => handleAiAnalysis('summary') },
           { id: 'copy-db', name: 'Copy Database', category: 'Data', icon: '📋', action: () => ui.setShowCopyDbModal(true) },
           { id: 'etl-mapping', name: 'Open ETL / Data Mapping', category: 'Data', icon: '🔄', action: () => ui.setShowMigrationModal(true) },
-          { id: 'entity-graph', name: 'Generate Entity Graph', category: 'Data', icon: '🔀', action: () => {
-            if (conn.activeConfig && conn.activeDatabase) {
-              ui.setEntityGraphTarget({ database: conn.activeDatabase, schema: '', config: conn.activeConfig });
-              ui.setShowEntityGraph(true);
-            } else {
-              alert("Please select a database first");
+          {
+            id: 'entity-graph', name: 'Generate Entity Graph', category: 'Data', icon: '🔀', action: () => {
+              if (conn.activeConfig && conn.activeDatabase) {
+                ui.setEntityGraphTarget({ database: conn.activeDatabase, schema: '', config: conn.activeConfig });
+                ui.setShowEntityGraph(true);
+              } else {
+                alert("Please select a database first");
+              }
             }
-          }},
+          },
           { id: 'export-db', name: 'Export Active Database', category: 'Data', icon: '📤', action: () => conn.activeDatabase ? ui.setShowExportDbModal(true) : alert("Please select a database first") },
           { id: 'import-db', name: 'Import to Active Database', category: 'Data', icon: '📥', action: () => conn.activeDatabase ? ui.setShowImportDbModal(true) : alert("Please select a database first") },
           { id: 'clear-chat', name: 'Clear Chat History', category: 'AI', icon: '🧹', action: () => ai.setChatHistory([]) },
