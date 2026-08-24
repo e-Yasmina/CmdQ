@@ -4,16 +4,30 @@ import PerformanceAnalysisViewer from '../PerformanceAnalysisViewer';
 import DataAnalysisViewer from '../DataAnalysisViewer';
 import SummaryAnalysisViewer from '../SummaryAnalysisViewer';
 import DataTable from '../DataTable';
+import TableSummary from '../TableSummary';
+import DatabaseSummary from '../DatabaseSummary';
 import { CopyIcon } from '../icons/CopyIcon';
+
+const ANALYSIS_TYPES = ['security_analysis', 'performance_analysis', 'data_analysis', 'summary_analysis'];
 
 export default function ResultsPanel({
   sqlResult, activeConfig, activeSchemaName, activeTableName,
   currentAbortController, copyFeedback, activeDatabase, viewMode,
+  selectedCli, customCliCommand,
   setShowImportDbModal, setShowExportDbModal, setShowMigrationModal,
   launchAiAnalysis, stopAi, handleTranslateView, handleCopyResults,
   setDiagnosisTarget, executeManualQuery, refreshTableData,
   setMutationHistory, setSqlResult,
 }) {
+  const effSchema = sqlResult?.targetSchema || activeSchemaName;
+  const effTable = sqlResult?.targetTable || activeTableName;
+  const showTableSummary = Boolean(
+    activeConfig && effTable &&
+    !sqlResult?.loading && !sqlResult?.error &&
+    !ANALYSIS_TYPES.includes(sqlResult?.type)
+  );
+  const showDbSummary = Boolean(activeConfig && activeDatabase && !effTable && !sqlResult);
+
   return (
     <div className="flex-1 bg-background p-4 flex flex-col min-h-0">
       <div className="flex justify-between items-center mb-2">
@@ -35,11 +49,11 @@ export default function ResultsPanel({
               disabled={!!currentAbortController}
               className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
             >📊 Data Analysis</button>
-            <button
+            {/* <button
               onClick={() => launchAiAnalysis('summary')}
               disabled={!!currentAbortController}
               className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-2 py-1 rounded text-xs transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
-            >📝 Summary</button>
+            >📝 Summary</button> */}
 
             {currentAbortController && (
               <button
@@ -81,7 +95,7 @@ export default function ResultsPanel({
               {copyFeedback ? (
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
               ) : (
-                <CopyIcon />
+                <CopyIcon className={undefined} />
               )}
             </button>
           </div>
@@ -90,7 +104,13 @@ export default function ResultsPanel({
 
       <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col">
         <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
-          {sqlResult?.type === 'security_analysis' ? (
+          {showDbSummary ? (
+            <DatabaseSummary
+              activeConfig={activeConfig}
+              databaseName={activeDatabase}
+              command={selectedCli === 'custom' ? customCliCommand : selectedCli}
+            />
+          ) : sqlResult?.type === 'security_analysis' ? (
             <SecurityAnalysisViewer result={sqlResult} />
           ) : sqlResult?.type === 'performance_analysis' ? (
             <PerformanceAnalysisViewer result={sqlResult} />
@@ -154,6 +174,15 @@ export default function ResultsPanel({
           )}
         </ScrollArea>
       </div>
+
+      {showTableSummary && (
+        <TableSummary
+          activeConfig={activeConfig}
+          schemaName={effSchema}
+          tableName={effTable}
+          command={selectedCli === 'custom' ? customCliCommand : selectedCli}
+        />
+      )}
     </div>
   );
 }

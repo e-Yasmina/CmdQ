@@ -461,10 +461,10 @@ function App() {
     return (
       <AiMessageRenderer
         content={content}
-        onExecuteSql={(sql) => analysis.executeManualQuery(sql, conn.activeConfig)}
+        onExecuteSql={(sql) => analysis.executeManualQuery(sql, conn.activeConfig, conn.sessionContext)}
       />
     );
-  }, [analysis, conn.activeConfig]);
+  }, [analysis, conn.activeConfig, conn.sessionContext]);
 
   // --- Keyboard shortcuts effect ---
   useEffect(() => {
@@ -684,6 +684,8 @@ function App() {
           copyFeedback={analysis.copyFeedback}
           activeDatabase={conn.activeDatabase}
           viewMode={ui.viewMode}
+          selectedCli={ai.selectedCli}
+          customCliCommand={ai.customCliCommand}
           setShowImportDbModal={ui.setShowImportDbModal}
           setShowExportDbModal={ui.setShowExportDbModal}
           setShowMigrationModal={ui.setShowMigrationModal}
@@ -722,8 +724,7 @@ function App() {
           isDatabase={true}
           targetName={conn.activeDatabase}
           activeConfig={conn.activeConfig}
-          onCancel={() => ui.setShowExportDbModal(false)}
-        />
+          onCancel={() => ui.setShowExportDbModal(false)} schemaName={undefined} tableName={undefined} />
       )}
 
       {ui.showImportDbModal && conn.activeConfig && (
@@ -735,8 +736,7 @@ function App() {
           onSuccess={() => {
             ui.setShowImportDbModal(false);
             if (conn.activeConnectionId) conn.handleRefreshConnection(conn.activeConnectionId);
-          }}
-        />
+          }} schemaName={undefined} tableName={undefined} />
       )}
 
       {ui.showMigrationModal && (

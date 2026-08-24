@@ -48,7 +48,7 @@ export default function SummaryAnalysisViewer({ result }) {
         <ScrollArea className="flex-1 p-6 space-y-6 overflow-y-auto">
             <div className="flex justify-between items-end border-b border-border pb-4">
                 <div>
-                    <h2 className="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+                    <h2 className="text-1xl font-black tracking-tight text-primary flex items-center gap-2">
                         <span>📝</span> Summary Overview
                     </h2>
                     <p className="text-secondary text-sm mt-1">
@@ -129,6 +129,7 @@ export default function SummaryAnalysisViewer({ result }) {
                             title="Table Schema Snapshot"
                             icon="📋"
                             description={`${metrics.columns?.length || 0} columns detected`}
+                            value={undefined} status={undefined}
                         >
                             <div className="mt-2 text-sm overflow-x-auto">
                                 <table className="w-full text-left font-mono text-xs">
@@ -164,14 +165,12 @@ export default function SummaryAnalysisViewer({ result }) {
                                 title="Storage Footprint"
                                 icon="💾"
                                 value={formatBytes(metrics.total_size_bytes)}
-                                description="Estimated Physical Size on Disk"
-                            />
+                                description="Estimated Physical Size on Disk" status={undefined} children={undefined} />
                             <MetricCard
                                 title="Data Volume"
                                 icon="📈"
                                 value={metrics.approx_rows?.toLocaleString() || 0}
-                                description="Live Record Count Approximation"
-                            />
+                                description="Live Record Count Approximation" status={undefined} children={undefined} />
                         </div>
                     </>
                 ) : (
@@ -180,14 +179,12 @@ export default function SummaryAnalysisViewer({ result }) {
                             title="Infrastructure Footprint"
                             icon="🏢"
                             value={metrics.total_tables?.toLocaleString() || 0}
-                            description="Total Tables Detected in Schema"
-                        />
+                            description="Total Tables Detected in Schema" status={undefined} children={undefined} />
                         <MetricCard
                             title="Total Database Size"
                             icon="🗄️"
                             value={formatBytes(metrics.database_size_bytes)}
-                            description="Estimated Global Size"
-                        />
+                            description="Estimated Global Size" status={undefined} children={undefined} />
                     </>
                 )}
             </div>
