@@ -1,7 +1,32 @@
 import { useState, useCallback, useEffect } from 'react';
 import { shortcutService } from '../services/shortcutService';
+import { applyTheme } from '../theme/palette';
 
 export function useUI() {
+  const [theme, setThemeState] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('cmdq_theme') as 'dark' | 'light') || 'dark';
+    }
+    return 'dark';
+  });
+
+  const setTheme = useCallback((newTheme: 'dark' | 'light') => {
+    setThemeState(newTheme);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('cmdq_theme', newTheme);
+    }
+    applyTheme(newTheme);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(theme === 'dark' ? 'light' : 'dark');
+  }, [theme, setTheme]);
+
+  // Apply theme on initial mount
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
   const [viewMode, setViewMode] = useState('ai');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(256);
@@ -86,6 +111,7 @@ export function useUI() {
   }, []);
 
   return {
+    theme, setTheme, toggleTheme,
     viewMode, setViewMode,
     sidebarCollapsed, setSidebarCollapsed,
     sidebarWidth, setSidebarWidth,

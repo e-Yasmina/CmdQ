@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { sql } from '@codemirror/lang-sql';
-import { vscodeDark } from '@uiw/codemirror-theme-vscode';
+import { vscodeDark, vscodeLight } from '@uiw/codemirror-theme-vscode';
 import SaveQueryModal from './SaveQueryModal';
 
-export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQuery, isLoading }) {
+export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQuery, isLoading, theme = 'dark' }) {
 
     const [showSaveModal, setShowSaveModal] = useState(false);
 
@@ -28,12 +28,12 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
     return (
         <div className="flex flex-col h-full bg-panel p-4">
             <div className="flex justify-between items-center mb-2">
-                <h2 className="text-xs uppercase text-gray-500 font-bold tracking-wider">SQL Editor</h2>
+                <h2 className="text-xs uppercase text-textSecondary font-bold tracking-wider">SQL Editor</h2>
                 <div className="flex gap-2">
                     <button
                         onClick={() => setShowSaveModal(true)}
                         disabled={isLoading || !value.trim()}
-                        className="bg-panel border border-border hover:bg-white/5 text-textPrimary px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer"
+                        className="bg-panel border border-border hover:bg-black/5 dark:hover:bg-white/5 text-textPrimary px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer"
                     >
                         💾 Save Query
                     </button>
@@ -57,7 +57,7 @@ export default function QueryEditor({ value, onChange, onExecuteQuery, onSaveQue
                 <CodeMirror
                     value={value}
                     placeholder="Write your SQL here (e.g. SELECT * FROM public.users LIMIT 10)..."
-                    theme={vscodeDark}
+                    theme={theme === 'light' ? vscodeLight : vscodeDark}
                     extensions={[sql()]}
                     onChange={onChange}
                     style={{ flex: 1, display: 'flex', flexDirection: 'column' }}

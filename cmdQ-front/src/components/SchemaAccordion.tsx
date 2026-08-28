@@ -51,7 +51,7 @@ const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSc
                     {isSchemaProtected && <span className="text-red-500" title="Protected">🛡️</span>}
                     {schemaName}
                 </span>
-                <span className="ml-2 text-[10px] text-gray-400 bg-black/30 border border-border px-1.5 py-0.5 rounded-full font-code">
+                <span className="ml-2 text-[10px] text-textSecondary bg-black/5 dark:bg-black/30 border border-border px-1.5 py-0.5 rounded-full font-code">
                     {tableNames.length}
                 </span>
             </li>
@@ -88,11 +88,11 @@ const SchemaAccordion = ({ schemaName, tables, onTableClick, onContextMenu, isSc
                                         {cols.map(col => {
                                             const info = getColIcon(col, colInfo[col], constraints);
                                             return (
-                                                <li key={col} className="text-[11px] py-px flex items-center gap-1.5 hover:bg-white/5 rounded px-1 group/col" title={info.title}>
+                                                <li key={col} className="text-[11px] py-px flex items-center gap-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded px-1 group/col" title={info.title}>
                                                     <span className={`text-[8px] ${info.color} w-3 text-center flex-shrink-0`}>{info.icon}</span>
-                                                    <span className="text-gray-400 group-hover/col:text-gray-200 truncate">{col}</span>
+                                                    <span className="text-textSecondary group-hover/col:text-textPrimary truncate">{col}</span>
                                                     {colInfo[col]?.nullable === false && (
-                                                        <span className="text-[8px] text-gray-600 ml-auto">NN</span>
+                                                        <span className="text-[8px] text-textSecondary opacity-70 ml-auto">NN</span>
                                                     )}
                                                 </li>
                                             );

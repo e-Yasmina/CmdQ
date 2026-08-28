@@ -111,7 +111,7 @@ export default function Sidebar({
                       return (
                         <div key={db} className="ml-2">
                           <div
-                            className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                            className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-textSecondary hover:text-textPrimary hover:bg-black/5 dark:hover:bg-white/5 dark:hover:text-white'}`}
                             onClick={() => handleDbChange(conn.id, db)}
                             onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: protectedItems.includes(`${conn.id}::${db}`) })}
                           >
@@ -180,9 +180,9 @@ export default function Sidebar({
                       <div className="text-[10px] text-gray-600 italic px-4">No saved queries</div>
                     ) : (
                       savedQueries.map(q => (
-                        <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                        <div key={q.id} className="group flex items-center justify-between px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5 rounded cursor-pointer transition-colors">
                           <span
-                            className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                            className="text-xs text-textSecondary truncate flex-1 hover:text-textPrimary dark:text-gray-400 dark:hover:text-white"
                             title={q.query}
                             onClick={() => { setSqlQuery(q.query); setActiveConnectionId(q.connectionId); setActiveDatabase(q.database); setViewMode('query'); }}
                           >📜 {q.name}</span>
@@ -202,9 +202,9 @@ export default function Sidebar({
                       <div className="text-[10px] text-gray-600 italic px-4">No saved chats</div>
                     ) : (
                       savedConversations.map(c => (
-                        <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                        <div key={c.id} className="group flex items-center justify-between px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5 rounded cursor-pointer transition-colors">
                           <span
-                            className="text-xs text-gray-400 truncate flex-1 hover:text-white"
+                            className="text-xs text-textSecondary truncate flex-1 hover:text-textPrimary dark:text-gray-400 dark:hover:text-white"
                             title={c.title}
                             onClick={() => { setChatHistory(c.history); setActiveConnectionId(c.connectionId); setActiveDatabase(c.database); setViewMode('ai'); }}
                           >💬 {c.title}</span>

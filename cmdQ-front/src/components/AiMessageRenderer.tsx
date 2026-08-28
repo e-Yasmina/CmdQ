@@ -74,7 +74,7 @@ export default function AiMessageRenderer({ content, onExecuteSql }) {
     let codeBlockCount = 0;
 
     return (
-      <div className="text-gray-300 text-xs leading-normal font-ui select-text">
+      <div className="text-textPrimary text-xs leading-normal font-ui select-text">
         <ReactMarkdown
           components={{
             pre: ({ children }) => <>{children}</>,
@@ -83,13 +83,13 @@ export default function AiMessageRenderer({ content, onExecuteSql }) {
             h3: ({ node, ...props }) => <h3 className="text-xs font-bold mt-1.5 mb-0.5 text-primary" {...props} />,
             h4: ({ node, ...props }) => <h4 className="text-xs font-semibold mt-1 mb-0.5 text-textPrimary" {...props} />,
             p: ({ node, ...props }) => <p className="mb-1.5 last:mb-0" {...props} />,
-            ul: ({ node, ...props }) => <ul className="list-disc pl-4 mb-1.5 space-y-0.5 text-gray-300" {...props} />,
-            ol: ({ node, ...props }) => <ol className="list-decimal pl-4 mb-1.5 space-y-0.5 text-gray-300" {...props} />,
-            li: ({ node, ...props }) => <li className="text-gray-300 my-0" {...props} />,
+            ul: ({ node, ...props }) => <ul className="list-disc pl-4 mb-1.5 space-y-0.5 text-textPrimary" {...props} />,
+            ol: ({ node, ...props }) => <ol className="list-decimal pl-4 mb-1.5 space-y-0.5 text-textPrimary" {...props} />,
+            li: ({ node, ...props }) => <li className="text-textPrimary my-0" {...props} />,
             strong: ({ node, ...props }) => <strong className="font-bold text-textPrimary" {...props} />,
-            em: ({ node, ...props }) => <em className="italic text-gray-400" {...props} />,
+            em: ({ node, ...props }) => <em className="italic text-textSecondary opacity-80" {...props} />,
             hr: () => <hr className="border-border/30 my-2" />,
-            blockquote: ({ node, ...props }) => <blockquote className="border-l-2 border-primary/60 pl-2.5 my-1.5 text-gray-400 italic" {...props} />,
+            blockquote: ({ node, ...props }) => <blockquote className="border-l-2 border-primary/60 pl-2.5 my-1.5 text-textSecondary italic" {...props} />,
             code: ({ node, className, children, ...props }) => {
               const match = /language-(\w+)/.exec(className || '');
               const lang = match ? match[1] : '';

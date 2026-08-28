@@ -621,6 +621,8 @@ function App() {
           registeredModels={ai.registeredModels}
           currentAbortController={analysis.currentAbortController}
           activeConfig={conn.activeConfig}
+          theme={ui.theme}
+          toggleTheme={ui.toggleTheme}
           handleDbChange={handleDbChange}
           closeTab={closeTab}
           setViewMode={switchViewMode}
@@ -672,6 +674,7 @@ function App() {
             setSqlQuery={analysis.setSqlQuery}
             executeManualQuery={executeManualQuery}
             handleSaveQuery={handleSaveQuery}
+            theme={ui.theme}
           />
         )}
 
@@ -818,6 +821,7 @@ function App() {
         isOpen={ui.showCommandPalette}
         onClose={() => ui.setShowCommandPalette(false)}
         commands={[
+          { id: 'toggle-theme', name: `Switch to ${ui.theme === 'dark' ? 'Light' : 'Dark'} Mode`, category: 'Appearance', icon: ui.theme === 'dark' ? '☀️' : '🌙', action: ui.toggleTheme },
           { id: 'add-server', name: 'Add Server Connection', category: 'Connections', icon: '🖥️', shortcut: ui.shortcuts['add-server'], action: () => conn.setShowConnectionForm(true) },
           { id: 'add-api', name: 'Register API Model', category: 'AI', icon: '🤖', action: () => ai.setShowApiModal(true) },
           { id: 'switch-ai', name: 'Switch to AI Prompt Mode', category: 'View', icon: '💬', shortcut: ui.shortcuts['switch-ai'], action: () => switchViewMode('ai') },

@@ -306,7 +306,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                 <input
                     autoFocus
                     type="text"
-                    className="bg-black/50 text-white p-1 border border-primary text-xs w-full min-w-[100px] outline-none rounded"
+                    className="bg-background text-textPrimary p-1 border border-primary text-xs w-full min-w-[100px] outline-none rounded"
                     value={editingCell.value === null ? "" : editingCell.value}
                     onChange={e => setEditingCell({ ...editingCell, value: e.target.value })}
                     onKeyDown={e => {
@@ -470,8 +470,8 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                     </div>
 
                     <ScrollArea className="flex-1 border border-border rounded bg-background overflow-auto min-h-0 relative">
-                        <table className="min-w-max w-full text-left text-xs text-gray-300">
-                            <thead className="bg-panel text-gray-400 uppercase sticky top-0 shadow-sm z-10">
+                        <table className="min-w-max w-full text-left text-xs text-textPrimary">
+                            <thead className="bg-panel text-textSecondary uppercase sticky top-0 shadow-sm z-10">
                                 <tr>
                                     {canMutate && <th className="p-2 border-b border-r border-border w-16 text-center">Act</th>}
                                     {columns.map(k => {
@@ -494,7 +494,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                                 {paginatedData.map((row, i) => {
                                     const realIndex = (safeCurrentPage - 1) * pageSize + i;
                                     return (
-                                        <tr key={realIndex} className="border-b border-border/50 hover:bg-white/5 transition-colors">
+                                        <tr key={realIndex} className="border-b border-border/50 hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
                                             {canMutate && (
                                                 <td className="p-2 border-r border-border/50 text-center select-none">
                                                     <button
@@ -547,7 +547,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                                             <td key={k} className="p-1 border-r border-border/50">
                                                 <input
                                                     type="text"
-                                                    className="bg-black/50 text-white p-1 border border-primary/50 text-xs w-full min-w-[100px] outline-none rounded focus:border-primary"
+                                                    className="bg-background text-textPrimary p-1 border border-primary/50 text-xs w-full min-w-[100px] outline-none rounded focus:border-primary"
                                                     value={addingRow[k]}
                                                     onChange={e => setAddingRow({ ...addingRow, [k]: e.target.value })}
                                                     placeholder={k}
@@ -693,7 +693,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                                 sel.addRange(range);
                             }
                         }}
-                        className="text-gray-300 font-code text-xs bg-black/50 p-2 rounded mt-1 border border-border/50 h-max max-h-24 overflow-y-auto select-text outline-none focus:ring-1 focus:ring-primary/40"
+                        className="text-textPrimary font-code text-xs bg-panel p-2 rounded mt-1 border border-border h-max max-h-24 overflow-y-auto select-text outline-none focus:ring-1 focus:ring-primary/40"
                     >
                         {result.extracted_sql}
                     </div>
@@ -743,7 +743,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                     {result.constraints && result.constraints.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                             {result.constraints.map((c, idx) => (
-                                <div key={idx} className="flex flex-col bg-black/40 border border-border/60 p-3 rounded-lg hover:border-primary/50 transition-all group shadow-sm">
+                                <div key={idx} className="flex flex-col bg-panel border border-border p-3 rounded-lg hover:border-primary/50 transition-all group shadow-sm">
                                     <div className="flex items-center justify-between mb-1">
                                         <span className="text-[11px] text-secondary font-bold truncate group-hover:text-primary transition-colors" title={c.name}>{c.name}</span>
                                         <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded border border-primary/20 uppercase font-bold tracking-tighter shrink-0">{c.type}</span>

@@ -2,7 +2,7 @@ import QueryEditor from '../QueryEditor';
 
 export default function QueryPanel({
   topPanelHeight, startResizingTopPanel, sqlQuery, isQueryExecuting,
-  setSqlQuery, executeManualQuery, handleSaveQuery,
+  setSqlQuery, executeManualQuery, handleSaveQuery, theme = 'dark',
 }) {
   return (
     <div
@@ -19,6 +19,7 @@ export default function QueryPanel({
         onExecuteQuery={executeManualQuery}
         onSaveQuery={handleSaveQuery}
         isLoading={isQueryExecuting}
+        theme={theme}
       />
     </div>
   );

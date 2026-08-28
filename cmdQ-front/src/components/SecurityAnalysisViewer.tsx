@@ -102,7 +102,7 @@ function SecurityAnalysisViewer({ result }) {
                         }
                     }}
                     className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary select-text outline-none focus:ring-1 focus:ring-primary/40"
-                    style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}
+                    style={{ boxShadow: 'inset 0 0 15px var(--color-shadow-inset, rgba(0,0,0,0.1))' }}
                 >
                     <div className="flex items-center justify-between gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights:</span>
@@ -128,7 +128,7 @@ function SecurityAnalysisViewer({ result }) {
                             )}
                         </button>
                     </div>
-                    <div className="text-gray-300 leading-relaxed overflow-x-auto select-text ai-summary-content">
+                    <div className="text-textPrimary leading-relaxed overflow-x-auto select-text ai-summary-content">
                         <ReactMarkdown
                             components={{
                                 h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 text-primary" {...props} />,
@@ -139,8 +139,8 @@ function SecurityAnalysisViewer({ result }) {
                                 ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-2 space-y-1" {...props} />,
                                 li: ({ node, ...props }) => <li className="" {...props} />,
                                 strong: ({ node, ...props }) => <strong className="font-bold text-textPrimary" {...props} />,
-                                em: ({ node, ...props }) => <em className="italic text-gray-400" {...props} />,
-                                code: ({ node, className, children, ...props }) => (!className && !String(children).includes('\n')) ? <code className="bg-black/30 text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono inline" {...props}>{children}</code> : <pre className="bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-400"><code {...props}>{children}</code></pre>,
+                                em: ({ node, ...props }) => <em className="italic opacity-70" {...props} />,
+                                code: ({ node, className, children, ...props }) => (!className && !String(children).includes('\n')) ? <code className="bg-black/10 dark:bg-black/30 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono inline" {...props}>{children}</code> : <pre className="bg-black/10 dark:bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-600 dark:text-emerald-400"><code {...props}>{children}</code></pre>,
                             }}
                         >
                             {ai_summary}

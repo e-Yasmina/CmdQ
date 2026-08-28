@@ -89,7 +89,7 @@ export default function AiPanel({
         className="font-code text-sm overflow-y-auto flex-1 mb-2 select-text outline-none focus:ring-1 focus:ring-primary/40 rounded p-1"
       >
         <div ref={conversationRef} className="select-text">
-          <div className="text-gray-500 mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
+          <div className="text-textSecondary mb-2">System: CmdQ initialized. {activeConfig ? 'Ready for commands.' : 'Waiting for connection...'}</div>
           {activeConfig && <div className="text-secondary mb-2">&gt; Connected to {activeConfig.database} via {activeConfig.user}@{activeConfig.host}:{activeConfig.port}.</div>}
           {chatHistory.map((msg, i) => (
             <div key={i} className={`mb-2 select-text ${msg.role === 'user' ? 'text-primary font-bold whitespace-pre-wrap' : 'text-gray-300'}`}>
@@ -135,7 +135,7 @@ export default function AiPanel({
                 key={a}
                 onClick={() => handleActionSelect(a)}
                 className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all cursor-pointer ${
-                  selectedAction === a ? "bg-primary text-background" : "bg-white/5 text-gray-400 hover:text-textPrimary hover:bg-white/10"
+                  selectedAction === a ? "bg-primary text-background" : "bg-black/5 dark:bg-white/5 text-textSecondary hover:text-textPrimary hover:bg-black/10 dark:hover:bg-white/10"
                 }`}
               >{a}</button>
             ))}

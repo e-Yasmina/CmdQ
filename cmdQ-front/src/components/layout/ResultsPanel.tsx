@@ -83,7 +83,7 @@ export default function ResultsPanel({
             <button
               onClick={handleTranslateView}
               disabled={!!currentAbortController || (!sqlResult?.data?.length)}
-              className="bg-[#2a1b38] border border-[#d288ff]/50 text-[#e0a8ff] hover:bg-[#d288ff] hover:text-black px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+              className="bg-[var(--color-translate-bg)] border border-[var(--color-translate-border)] text-[var(--color-translate-text)] hover:bg-[var(--color-translate-hover-bg)] hover:text-[var(--color-translate-hover-text)] px-2 py-1 rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
               title="Translate the current visible table data"
             >🌐 Translate View</button>
             <button
