@@ -704,17 +704,18 @@ def extract_entity_graph_data(db_type, host, port, user, password, database,
                 src = edge["source"]
                 table_outgoing.setdefault(src, []).append(edge)
 
-            # Detect junction tables: ≥2 FKs to different tables, ≥50% of columns are FKs
+            # Detect junction tables: 2 to 3 FKs to different tables, ≥50% of columns are FKs, and total_cols <= 6.
+            # Large multi-FK tables (e.g. audit_log, progress_tracker with 16 FKs) are domain entities, not simple join tables.
             junction_tables = set()
             for src_table, fks in table_outgoing.items():
                 ref_tables = set(e["target"] for e in fks)
-                if len(ref_tables) >= 2:
+                if 2 <= len(ref_tables) <= 3:
                     s_parts = src_table.split(".", 1)
                     if len(s_parts) == 2:
                         s_schema, s_name = s_parts
                         fk_cols = fk_columns.get((s_schema, s_name), set())
                         total_cols = len(table_columns.get((s_schema, s_name), []))
-                        if total_cols > 0 and len(fk_cols) >= total_cols * 0.5:
+                        if total_cols > 0 and len(fk_cols) >= total_cols * 0.5 and total_cols <= 6:
                             junction_tables.add(src_table)
             print(f"[FK DEBUG] Junction tables detected: {junction_tables}")
 

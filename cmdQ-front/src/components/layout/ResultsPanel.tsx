@@ -102,7 +102,7 @@ export default function ResultsPanel({
         )}
       </div>
 
-      <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col">
+      <div className="flex-1 rounded border border-border bg-panel overflow-hidden flex flex-col min-h-0">
         <ScrollArea className="font-code text-sm overflow-y-auto flex-1 mb-2">
           {showDbSummary ? (
             <DatabaseSummary
