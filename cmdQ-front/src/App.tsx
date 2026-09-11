@@ -279,8 +279,19 @@ function App() {
 
   // --- Coordinator: executeManualQuery ---
   const executeManualQuery = useCallback((queryText) => {
-    analysis.executeManualQuery(queryText, conn.activeConfig, conn.sessionContext);
-  }, [analysis, conn.activeConfig, conn.sessionContext]);
+    analysis.executeManualQuery(
+      queryText,
+      conn.activeConfig,
+      conn.sessionContext,
+      {
+        setActiveSchemaName: conn.setActiveSchemaName,
+        setActiveTableName: conn.setActiveTableName,
+        setSelectedTable: ai.setSelectedTable,
+        activeSchema: conn.activeSchema,
+        activeSchemaName: conn.activeSchemaName,
+      }
+    );
+  }, [analysis, conn.activeConfig, conn.sessionContext, conn.setActiveSchemaName, conn.setActiveTableName, conn.activeSchema, conn.activeSchemaName, ai.setSelectedTable]);
 
   // --- Coordinator: handleSaveQuery ---
   const handleSaveQuery = useCallback(async (queryText, name) => {
@@ -313,6 +324,7 @@ function App() {
       setActiveTableName: conn.setActiveTableName,
       setSelectedTable: ai.setSelectedTable,
       activeSchema: conn.activeSchema,
+      activeSchemaName: conn.activeSchemaName,
       extractTableFromQuery: analysis.extractTableFromQuery,
       extractAllTablesFromQuery: analysis.extractAllTablesFromQuery,
     });
@@ -461,10 +473,10 @@ function App() {
     return (
       <AiMessageRenderer
         content={content}
-        onExecuteSql={(sql) => analysis.executeManualQuery(sql, conn.activeConfig, conn.sessionContext)}
+        onExecuteSql={(sql) => executeManualQuery(sql)}
       />
     );
-  }, [analysis, conn.activeConfig, conn.sessionContext]);
+  }, [executeManualQuery]);
 
   // --- Keyboard shortcuts effect ---
   useEffect(() => {

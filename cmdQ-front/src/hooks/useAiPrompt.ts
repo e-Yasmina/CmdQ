@@ -219,7 +219,7 @@ export function useAiPrompt() {
     protectedItems, sessionContext, attachedFile, selectedTable, selectedAction,
     setCurrentAbortController, setSqlResult, setChatHistory, setPrompt: setPromptOuter,
     setAttachedFile: setAttachedFileOuter, setActiveSchemaName, setActiveTableName,
-    setSelectedTable: setSelectedTableOuter, activeSchema, extractTableFromQuery,
+    setSelectedTable: setSelectedTableOuter, activeSchema, activeSchemaName, extractTableFromQuery,
     extractAllTablesFromQuery,
   }) => {
     const command = selectedCli === "custom" ? customCliCommand : selectedCli;
@@ -241,21 +241,49 @@ export function useAiPrompt() {
       setAttachedFileOuter(null);
 
       if (data.extracted_sql) {
+        const cleaned = data.extracted_sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^--.*$/gm, '').trim();
+        const isSelect = /^\s*(?:with\b[\s\S]*?\bselect\b|select\b)/i.test(cleaned);
         const extracted = extractTableFromQuery(data.extracted_sql);
-        const isSelect = /^\s*(?:--.*\n\s*)*select\b/i.test(data.extracted_sql);
         data.isTableClick = false;
-        data.targetSchema = (isSelect && extracted) ? (extracted.schema || 'public') : null;
-        data.targetTable = (isSelect && extracted) ? extracted.table : null;
 
         if (isSelect && extracted) {
-          setActiveSchemaName(extracted.schema);
+          let resolvedSchema = extracted.schema;
+          if (!resolvedSchema) {
+            if (activeSchema) {
+              if (activeSchemaName && activeSchema[activeSchemaName]?.[extracted.table]) {
+                resolvedSchema = activeSchemaName;
+              } else {
+                const foundSchema = Object.keys(activeSchema).find(s => activeSchema[s]?.[extracted.table]);
+                if (foundSchema) {
+                  resolvedSchema = foundSchema;
+                }
+              }
+            }
+            if (!resolvedSchema) {
+              resolvedSchema = activeSchemaName || (activeSchema && Object.keys(activeSchema).length > 0 ? Object.keys(activeSchema)[0] : null) || 'public';
+            }
+          }
+
+          data.targetSchema = resolvedSchema;
+          data.targetTable = extracted.table;
+
+          setActiveSchemaName(resolvedSchema);
           setActiveTableName(extracted.table);
           const allTables = extractAllTablesFromQuery(data.extracted_sql);
-          setSelectedTableOuter(allTables);
+          setSelectedTableOuter(allTables.length > 0 ? allTables : [`${resolvedSchema}.${extracted.table}`]);
 
-          const tableInfo = activeSchema?.[extracted.schema]?.[extracted.table];
-          if (tableInfo?.constraints) data.constraints = tableInfo.constraints;
-          if (tableInfo?.columns && (!data.columns || data.columns.length === 0)) data.columns = tableInfo.columns;
+          const tableInfo = activeSchema?.[resolvedSchema]?.[extracted.table];
+          if (tableInfo) {
+            if (tableInfo.has_rls) data.hasRls = tableInfo.has_rls;
+            if (tableInfo.constraints) data.constraints = tableInfo.constraints;
+            const schemaColumns = Array.isArray(tableInfo) ? tableInfo : (tableInfo.columns || []);
+            if ((!data.columns || data.columns.length === 0) && schemaColumns.length > 0) {
+              data.columns = schemaColumns;
+            }
+          }
+        } else {
+          data.targetSchema = null;
+          data.targetTable = null;
         }
       }
 

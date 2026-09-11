@@ -66,8 +66,8 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
         return () => window.removeEventListener('keydown', handleEsc);
     }, [isFullScreen]);
 
-    const effectiveSchema = activeSchemaName || result?.targetSchema;
-    const effectiveTable = activeTableName || result?.targetTable;
+    const effectiveSchema = result?.targetSchema || activeSchemaName;
+    const effectiveTable = result?.targetTable || activeTableName;
     const canMutate = Boolean(activeConfig && effectiveSchema && effectiveTable && onRefresh);
     const refSchema = effectiveSchema;
     const refTable = effectiveTable;

@@ -11,8 +11,8 @@ export function useAnalysis() {
 
   const extractTableFromQuery = useCallback((query) => {
     if (!query) return null;
-    const cleaned = query.replace(/^--.*$/gm, '').trim();
-    const match = cleaned.match(/\bfrom\s+([`"\[]?[a-zA-Z0-9_]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_]+[`"\]]?)?)/i);
+    const cleaned = query.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^--.*$/gm, '').trim();
+    const match = cleaned.match(/\bfrom\s+([`"\[]?[a-zA-Z0-9_$]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_$]+[`"\]]?)?)/i);
     if (match) {
       const full = match[1].replace(/[`"\[\]]/g, '');
       const parts = full.split('.');
@@ -24,9 +24,9 @@ export function useAnalysis() {
 
   const extractAllTablesFromQuery = useCallback((query) => {
     if (!query) return [];
-    const cleaned = query.replace(/^--.*$/gm, '').trim();
+    const cleaned = query.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^--.*$/gm, '').trim();
     const tables = [];
-    const regex = /\b(?:from|join)\s+([`"\[]?[a-zA-Z0-9_]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_]+[`"\]]?)?)/gi;
+    const regex = /\b(?:from|join)\s+([`"\[]?[a-zA-Z0-9_$]+[`"\]]?(?:\.[`"\[]?[a-zA-Z0-9_$]+[`"\]]?)?)/gi;
     let match;
     while ((match = regex.exec(cleaned)) !== null) {
       const full = match[1].replace(/[`"\[\]]/g, '');
@@ -34,43 +34,96 @@ export function useAnalysis() {
       let schema, table;
       if (parts.length === 2) { schema = parts[0]; table = parts[1]; }
       else { schema = null; table = parts[0]; }
-      const tableRef = `${schema}.${table}`;
+      const tableRef = schema ? `${schema}.${table}` : table;
       if (!tables.includes(tableRef)) tables.push(tableRef);
     }
     return tables;
   }, []);
 
-  const executeManualQuery = useCallback(async (queryText, activeConfig, sessionContext) => {
+  const executeManualQuery = useCallback(async (
+    queryText,
+    activeConfig,
+    sessionContext,
+    { setActiveSchemaName, setActiveTableName, setSelectedTable, activeSchema, activeSchemaName } = {}
+  ) => {
     if (!activeConfig || !queryText.trim()) return;
     setSqlResult({ loading: true });
     setIsQueryExecuting(true);
     try {
       const data = await apiService.executeQuery({ query: queryText, db_config: activeConfig, session_context: sessionContext });
 
+      const cleaned = queryText.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^--.*$/gm, '').trim();
+      const isSelect = /^\s*(?:with\b[\s\S]*?\bselect\b|select\b)/i.test(cleaned);
       const extracted = extractTableFromQuery(queryText);
-      const isSelect = queryText.toLowerCase().trim().startsWith('select');
 
       if (data.status === "error") {
         setSqlResult({ error: data.message || "Query Failed" });
         return;
       }
 
+      let resolvedSchema = null;
+      let resolvedTable = null;
+      let tableInfo = null;
+      let hasRls = false;
+      let constraints = [];
+      let columns = data.columns || (data.data?.length > 0 ? Object.keys(data.data[0]) : []);
+
+      if (isSelect && extracted) {
+        resolvedTable = extracted.table;
+        resolvedSchema = extracted.schema;
+
+        if (!resolvedSchema) {
+          if (activeSchema) {
+            if (activeSchemaName && activeSchema[activeSchemaName]?.[extracted.table]) {
+              resolvedSchema = activeSchemaName;
+            } else {
+              const foundSchema = Object.keys(activeSchema).find(s => activeSchema[s]?.[extracted.table]);
+              if (foundSchema) {
+                resolvedSchema = foundSchema;
+              }
+            }
+          }
+          if (!resolvedSchema) {
+            resolvedSchema = activeSchemaName || (activeSchema && Object.keys(activeSchema).length > 0 ? Object.keys(activeSchema)[0] : null) || 'public';
+          }
+        }
+
+        if (setActiveSchemaName) setActiveSchemaName(resolvedSchema);
+        if (setActiveTableName) setActiveTableName(resolvedTable);
+        if (setSelectedTable) {
+          const allTables = extractAllTablesFromQuery(queryText);
+          setSelectedTable(allTables.length > 0 ? allTables : [`${resolvedSchema}.${resolvedTable}`]);
+        }
+
+        tableInfo = activeSchema?.[resolvedSchema]?.[resolvedTable];
+        if (tableInfo) {
+          hasRls = tableInfo.has_rls || false;
+          if (tableInfo.constraints) constraints = tableInfo.constraints;
+          const schemaColumns = Array.isArray(tableInfo) ? tableInfo : (tableInfo.columns || []);
+          if ((!columns || columns.length === 0) && schemaColumns.length > 0) {
+            columns = schemaColumns;
+          }
+        }
+      }
+
       setSqlResult({
         data: data.data || [],
-        columns: data.columns || (data.data?.length > 0 ? Object.keys(data.data[0]) : []),
+        columns,
+        constraints,
+        hasRls,
         original_data: data.data ? JSON.parse(JSON.stringify(data.data)) : [],
         message: data.message,
         extracted_sql: queryText,
         isTableClick: false,
-        targetSchema: (isSelect && extracted) ? (extracted.schema || 'public') : null,
-        targetTable: (isSelect && extracted) ? extracted.table : null,
+        targetSchema: resolvedSchema,
+        targetTable: resolvedTable,
       });
     } catch (err) {
       setSqlResult({ error: err.message });
     } finally {
       setIsQueryExecuting(false);
     }
-  }, [extractTableFromQuery]);
+  }, [extractTableFromQuery, extractAllTablesFromQuery]);
 
   const stopAi = useCallback(() => {
     if (currentAbortController) {
