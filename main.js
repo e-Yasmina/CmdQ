@@ -79,18 +79,72 @@ function createWindow() {
 }
 
 function startBackend() {
-  console.log("Starting Python backend...");
-  backendProcess = spawn('python', ['-u', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
-    cwd: path.join(__dirname, 'python-backend'),
-    shell: true
-  });
+  return new Promise((resolve, reject) => {
+    console.log("Starting Python backend...");
 
-  backendProcess.stdout.on('data', (data) => {
-    console.log(`Backend: ${data}`);
-  });
+    const isWindows = process.platform === 'win32';
+    const pythonPath = isWindows
+      ? path.join(__dirname, 'python-backend', 'venv', 'Scripts', 'python.exe')
+      : path.join(__dirname, 'python-backend', 'venv', 'bin', 'python');
 
-  backendProcess.stderr.on('data', (data) => {
-    console.error(`Backend Error: ${data}`);
+    let settled = false;
+    let stderrBuffer = '';
+
+    const settle = (fn) => {
+      if (!settled) {
+        settled = true;
+        fn();
+      }
+    };
+
+    backendProcess = spawn(pythonPath, ['-u', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
+      cwd: path.join(__dirname, 'python-backend'),
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+
+    const onOutput = (isError) => (data) => {
+      const text = data.toString();
+      if (isError) {
+        stderrBuffer += text;
+        console.error(`Backend Error: ${text}`);
+      } else {
+        console.log(`Backend: ${text}`);
+      }
+      if (!settled && /Application startup complete/i.test(text)) {
+        console.log("Backend ready.");
+        settle(() => resolve(true));
+      }
+    };
+
+    backendProcess.stdout.on('data', onOutput(false));
+    backendProcess.stderr.on('data', onOutput(true));
+
+    const fail = (message) => {
+      if (stderrBuffer) message += `\n${stderrBuffer.trim()}`;
+      console.error(message);
+      settle(() => reject(new Error(message)));
+    };
+
+    backendProcess.on('error', (err) => {
+      fail(`Failed to start backend: ${err.message}`);
+    });
+
+    backendProcess.on('exit', (code, signal) => {
+      console.log(`Backend exited (code=${code}, signal=${signal})`);
+      if (!settled) {
+        if (/address already in use/i.test(stderrBuffer)) {
+          fail(`Backend port ${BACKEND_PORT} is already in use; if it is not the CmdQ service, free the port and restart.`);
+        } else {
+          fail(`Backend exited before it was ready (code=${code}, signal=${signal}). Check the Python venv and that uvicorn is installed.`);
+        }
+      }
+    });
+
+    backendProcess.on('close', () => {
+      if (!settled) {
+        fail('Backend process closed before it was ready.');
+      }
+    });
   });
 }
 
@@ -118,7 +172,11 @@ app.whenReady().then(async () => {
   if (await isTcpPortOpen(BACKEND_PORT)) {
     console.log(`Backend port ${BACKEND_PORT} is already in use; reusing existing local service.`);
   } else {
-    startBackend();
+    try {
+      await startBackend();
+    } catch (err) {
+      console.error(err.message);
+    }
   }
 
   if (isDev) {
