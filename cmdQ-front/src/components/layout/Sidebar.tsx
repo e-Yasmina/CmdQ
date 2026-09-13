@@ -14,6 +14,28 @@ export default function Sidebar({
   startResizingSidebar, storageService,
   setSavedQueries, setSavedConversations,
 }) {
+  const isProtected = (itemId) => {
+    return protectedItems.some(p => (typeof p === 'string' ? p : p.id) === itemId);
+  };
+
+  const getProtectionLevel = (itemId) => {
+    const rule = protectedItems.find(p => (typeof p === 'string' ? p : p.id) === itemId);
+    if (!rule) return null;
+    if (typeof rule === 'string') return 'full';
+    return rule.level || 'full';
+  };
+
+  const getWritePermissions = (itemId) => {
+    const rule = protectedItems.find(p => (typeof p === 'string' ? p : p.id) === itemId);
+    if (!rule || typeof rule === 'string') return [];
+    return rule.write_permissions || [];
+  };
+
+  const PROTECTION_ICONS = {
+    full: '🔒',
+    readonly: '👁️',
+    custom: '⚙️',
+  };
   return (
     <aside
       style={{ width: sidebarCollapsed ? '64px' : `${sidebarWidth}px` }}
@@ -86,10 +108,10 @@ export default function Sidebar({
                 <div key={conn.id} className="mb-4">
                   <div
                     className="text-secondary font-bold text-xs mb-1 uppercase px-2 flex items-center justify-between group cursor-context-menu"
-                    onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'server', server: conn, isProtected: protectedItems.includes(conn.id) })}
+                    onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'server', server: conn, isProtected: isProtected(conn.id), protectionLevel: getProtectionLevel(conn.id), writePermissions: getWritePermissions(conn.id) })}
                   >
                     <span className="truncate pr-4 flex items-center gap-1">
-                      {protectedItems.includes(conn.id) && <span className="text-red-500" title="Protected">🛡️</span>}
+                      {isProtected(conn.id) && <span className="text-red-500" title={`Protected (${getProtectionLevel(conn.id)})`}>{PROTECTION_ICONS[getProtectionLevel(conn.id)] || '🛡️'}</span>}
                       🖥️ {conn.config.server_name || conn.id}
                     </span>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -113,10 +135,10 @@ export default function Sidebar({
                           <div
                             className={`group cursor-context-menu px-2 py-1 flex items-center justify-between rounded text-sm transition-colors ${isActive ? 'bg-primary/20 text-primary font-bold shadow-[inset_2px_0_0_0_var(--color-primary)]' : 'text-textSecondary hover:text-textPrimary hover:bg-black/5 dark:hover:bg-white/5 dark:hover:text-white'}`}
                             onClick={() => handleDbChange(conn.id, db)}
-                            onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: protectedItems.includes(`${conn.id}::${db}`) })}
+                            onContextMenu={(e) => handleExplorerContextMenu(e, { type: 'database', server: conn, database: db, isProtected: isProtected(`${conn.id}::${db}`), protectionLevel: getProtectionLevel(`${conn.id}::${db}`), writePermissions: getWritePermissions(`${conn.id}::${db}`) })}
                           >
                             <div className="flex items-center gap-2 truncate pr-2">
-                              {protectedItems.includes(`${conn.id}::${db}`) && <span className="text-red-500" title="Protected">🛡️</span>}
+                              {isProtected(`${conn.id}::${db}`) && <span className="text-red-500" title={`Protected (${getProtectionLevel(`${conn.id}::${db}`)})`}>{PROTECTION_ICONS[getProtectionLevel(`${conn.id}::${db}`)] || '🛡️'}</span>}
                               💾 <span className="truncate">{db}</span>
                             </div>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -137,13 +159,19 @@ export default function Sidebar({
                                       schemaName={schemaName}
                                       tables={tables}
                                       onTableClick={(s, t) => handleTableClick(conn.id, db, s, t)}
-                                      isSchemaProtected={protectedItems.includes(`${conn.id}::${db}::${schemaName}`)}
-                                      getIsTableProtected={(t) => protectedItems.includes(`${conn.id}::${db}::${schemaName}::${t}`)}
+                                      isSchemaProtected={isProtected(`${conn.id}::${db}::${schemaName}`)}
+                                      getIsTableProtected={(t) => isProtected(`${conn.id}::${db}::${schemaName}::${t}`)}
                                       onContextMenu={(e, type, s, t) => handleExplorerContextMenu(e, {
                                         type, server: conn, database: db, schemaName: s, tableName: t,
                                         isProtected: type === 'schema'
-                                          ? protectedItems.includes(`${conn.id}::${db}::${s}`)
-                                          : protectedItems.includes(`${conn.id}::${db}::${s}::${t}`),
+                                          ? isProtected(`${conn.id}::${db}::${s}`)
+                                          : isProtected(`${conn.id}::${db}::${s}::${t}`),
+                                        protectionLevel: type === 'schema'
+                                          ? getProtectionLevel(`${conn.id}::${db}::${s}`)
+                                          : getProtectionLevel(`${conn.id}::${db}::${s}::${t}`),
+                                        writePermissions: type === 'schema'
+                                          ? getWritePermissions(`${conn.id}::${db}::${s}`)
+                                          : getWritePermissions(`${conn.id}::${db}::${s}::${t}`),
                                       })}
                                     />
                                   ))}

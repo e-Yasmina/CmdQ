@@ -1,34 +1,29 @@
 import json
-import re
 from typing import Any
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 
 from sql_executor import SqlExecutor
+from sql_safety_checker import SQLSafetyChecker
 
 
 def create_sql_agent(
     llm: BaseChatModel,
     system_prompt: str,
     db_config: Any,
-    protected_items: list[str],
+    protected_items: list,
     session_context: list[str],
     max_iterations: int = 10
 ):
+    checker = SQLSafetyChecker(protected_items)
+
     @tool
     def execute_sql(query: str) -> str:
         """Execute a SQL query on the connected database and return results as JSON."""
-        upper = query.upper()
-        if any(kw in upper for kw in ["DROP ", "ALTER ", "TRUNCATE "]):
-            return "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."
-        if "DELETE " in upper and "WHERE " not in upper:
-            return "BLOCKED BY SAFETY SYSTEM: DELETE without WHERE is not allowed."
-
-        for p in protected_items:
-            p_bare = p.split("::")[-1]
-            if p_bare.lower() in query.lower():
-                return f"BLOCKED BY SAFETY SYSTEM: '{p_bare}' is protected."
+        is_safe, error = checker.check_all(query, context="agent")
+        if not is_safe:
+            return f"BLOCKED BY SAFETY SYSTEM: {error}"
 
         from secret_utils import mask_password
 

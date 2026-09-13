@@ -9,6 +9,7 @@ from database import build_engine, get_db_connection
 from db_context_builder import extract_schema, extract_entity_graph_data
 from helpers import validate_identifier
 from models import ConnectionDetails, PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, DatabaseCopyRequest, EntityGraphRequest
+from persistence_manager import storage
 from secret_utils import mask_password
 
 logger = logging.getLogger("cmdq-backend")
@@ -91,6 +92,23 @@ async def drop_database(req: DropDatabaseRequest):
         cfg = req.db_config
         db_name = validate_identifier(req.db_name, "database name")
         system_dbs = {"information_schema", "mysql", "performance_schema", "sys"}
+
+        # Check if database is protected
+        protection_rules = storage.get_items("protected_items")
+        conn_id = cfg.server_name or f"{cfg.user}@{cfg.host}:{cfg.port}"
+        for rule in protection_rules:
+            rule_id = rule.get("id", "")
+            rule_level = rule.get("level", "full")
+            # Check if this rule protects the entire database
+            parts = rule_id.split("::")
+            if len(parts) >= 2 and parts[-1].lower() == db_name.lower():
+                if rule_level == "full":
+                    raise ValueError(f"Database '{db_name}' is fully protected and cannot be dropped.")
+            # Also check connection-level protection
+            if rule.get("connection_id", "") == conn_id and parts[-1].lower() == db_name.lower():
+                if rule_level == "full":
+                    raise ValueError(f"Database '{db_name}' is fully protected and cannot be dropped.")
+
         if cfg.db_type == "postgres":
             system_dbs.add("postgres")
             bootstrap = "postgres"

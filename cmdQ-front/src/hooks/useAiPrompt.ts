@@ -233,7 +233,10 @@ export function useAiPrompt() {
     try {
       const data = await apiService.launchAiPrompt({
         command, prompt, db_config: activeConfig, chat_history: chatHistory,
-        protected_items: protectedItems, session_context: sessionContext,
+        protected_items: protectedItems.map(p =>
+          typeof p === 'string' ? { id: p, level: 'full' } : p
+        ),
+        session_context: sessionContext,
         attached_file: attachedFile || undefined,
         selected_table: selectedTable.join(', '), action: selectedAction,
       }, controller.signal);

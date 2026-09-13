@@ -14,7 +14,8 @@ class PersistenceManager:
             "connections": os.path.join(self.app_data_dir, "connections.json"),
             "queries": os.path.join(self.app_data_dir, "queries.json"),
             "conversations": os.path.join(self.app_data_dir, "conversations.json"),
-            "api_keys": os.path.join(self.app_data_dir, "api_keys.json")
+            "api_keys": os.path.join(self.app_data_dir, "api_keys.json"),
+            "protected_items": os.path.join(self.app_data_dir, "protected_items.json")
         }
         
         # Initialize files if they don't exist

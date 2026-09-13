@@ -331,21 +331,60 @@ function App() {
   }, [ai, conn, analysis]);
 
   // --- Coordinator: handleExplorerAction ---
+  const getEntityId = useCallback((entity) => {
+    const idMap = {
+      'server': entity.server?.id,
+      'database': `${entity.server?.id}::${entity.database}`,
+      'schema': `${entity.server?.id}::${entity.database}::${entity.schemaName}`,
+      'table': `${entity.server?.id}::${entity.database}::${entity.schemaName}::${entity.tableName}`
+    };
+    return idMap[entity.type] || null;
+  }, []);
+
   const handleExplorerAction = useCallback(async (action, entity) => {
     if (action === 'toggle_protect') {
-      const idMap = {
-        'server': entity.server?.id,
-        'database': `${entity.server?.id}::${entity.database}`,
-        'schema': `${entity.server?.id}::${entity.database}::${entity.schemaName}`,
-        'table': `${entity.server?.id}::${entity.database}::${entity.schemaName}::${entity.tableName}`,
-      };
-      const id = idMap[entity.type];
-      if (id) {
-        const newProtected = conn.protectedItems.includes(id)
-          ? conn.protectedItems.filter(p => p !== id)
-          : [...conn.protectedItems, id];
-        conn.setProtectedItems(newProtected);
-        localStorage.setItem('cmdq_protected_items', JSON.stringify(newProtected));
+      conn.handleExplorerAction(action, entity);
+      return;
+    }
+
+    // Protection actions from context menu
+    if (action === 'protect_full') {
+      const id = getEntityId(entity);
+      if (id) conn.setProtectionLevel(id, 'full');
+      return;
+    }
+    if (action === 'protect_readonly') {
+      const id = getEntityId(entity);
+      if (id) conn.setProtectionLevel(id, 'readonly');
+      return;
+    }
+    if (action === 'protect_custom_all') {
+      const id = getEntityId(entity);
+      if (id) conn.setProtectionLevel(id, 'custom', ['insert', 'update', 'delete']);
+      return;
+    }
+    if (action === 'protect_remove') {
+      const id = getEntityId(entity);
+      if (id) conn.removeProtectionItem(id);
+      return;
+    }
+    if (action === 'set_write_permissions') {
+      const id = getEntityId(entity);
+      if (!id) return;
+      const rule = conn.getProtectionRule(id);
+      const currentPerms = (rule && typeof rule === 'object' && rule.write_permissions) || [];
+      const toggleOp = entity.toggleOp;
+      let newPerms;
+      if (currentPerms.includes(toggleOp)) {
+        newPerms = currentPerms.filter(p => p !== toggleOp);
+      } else {
+        newPerms = [...currentPerms, toggleOp];
+      }
+      if (newPerms.length === 0) {
+        // No permissions left -> readonly
+        conn.setProtectionLevel(id, 'readonly');
+      } else {
+        conn.setProtectionLevel(id, 'custom', newPerms);
       }
       return;
     }

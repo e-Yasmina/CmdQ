@@ -13,6 +13,9 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from sql_safety_checker import SQLSafetyChecker
+from models import ProtectionItem
+
 
 def extract_schema(db_type, host, port, user, password, database):
     """
@@ -254,11 +257,45 @@ BASE_PROMPT_TEMPLATE = PromptTemplate(
 
 
 def build_base_prompt(db_config, schema_dict, protected_items, session_context,
-                      attached_file, chat_history, user_prompt):
-    """Builds the complete base prompt for the AI from all context components."""
+                      attached_file, chat_history, user_prompt, relationships=None):
+    """Builds the complete base prompt for the AI from all context components.
+
+    Args:
+        protected_items: List of ProtectionItem dicts (with 'id' and 'level' keys).
+        relationships: Optional list of FK relationship dicts for FK-aware filtering.
+    """
+    # Filter schema based on protection rules before building prompt
+    checker = SQLSafetyChecker([p.dict() if hasattr(p, 'dict') else p for p in (protected_items or [])])
+    has_protection = any(
+        (p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")) != "none"
+        for p in (protected_items or [])
+    )
+    if has_protection:
+        if relationships:
+            schema_dict = checker.filter_schema_for_fk(schema_dict, relationships)
+        else:
+            schema_dict = checker.filter_schema(schema_dict)
+
     metadata_str = build_metadata_str(schema_dict)
     schema_json_str = build_schema_json_str(schema_dict)
-    protection_instruction = build_protection_instruction(protected_items)
+
+    # Only include protection instruction for partial protection (readonly/insert/update/delete)
+    # For full protection, tables are already hidden from schema
+    partial_items = []
+    for p in (protected_items or []):
+        level = p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")
+        if level not in ("full", "none"):
+            bare = (p.id if hasattr(p, 'id') else p.get("id", "")).split("::")[-1]
+            partial_items.append(f"'{bare}' ({level})")
+    if partial_items:
+        prot_list = ", ".join(partial_items)
+        protection_instruction = (
+            f"IMPORTANT: The following items have restricted access: {prot_list}. "
+            f"Respect their permissions — only perform allowed operations on them.\n\n"
+        )
+    else:
+        protection_instruction = ""
+
     session_context_instr = build_session_context_instr(session_context)
     history_str = build_chat_history_str(chat_history)
     attached_str = get_attached_file_prompt(attached_file)
@@ -287,6 +324,23 @@ def extract_and_build_prompt(db_config, protected_items, session_context,
         password=db_config.password,
         database=db_config.database
     )
+
+    # Extract relationships for FK-aware protection filtering
+    relationships = None
+    has_protection = any(
+        (p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")) != "none"
+        for p in (protected_items or [])
+    )
+    if has_protection:
+        relationships = extract_relationships(
+            db_type=db_config.db_type,
+            host=db_config.host,
+            port=db_config.port,
+            user=db_config.user,
+            password=db_config.password,
+            database=db_config.database
+        )
+
     return build_base_prompt(
         db_config=db_config,
         schema_dict=schema_dict,
@@ -294,7 +348,8 @@ def extract_and_build_prompt(db_config, protected_items, session_context,
         session_context=session_context,
         attached_file=attached_file,
         chat_history=chat_history,
-        user_prompt=user_prompt
+        user_prompt=user_prompt,
+        relationships=relationships
     )
 
     # TODO: In a future enhancement, the frontend should only send lightweight info

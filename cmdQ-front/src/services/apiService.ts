@@ -307,6 +307,47 @@ export const apiService = {
         return data;
     },
 
+    fetchProtectionRules: async (connectionId) => {
+        const url = connectionId
+            ? `${API_BASE_URL}/protection?connection_id=${encodeURIComponent(connectionId)}`
+            : `${API_BASE_URL}/protection`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to fetch protection rules");
+        return data;
+    },
+
+    saveProtectionRule: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/protection`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to save protection rule");
+        return data;
+    },
+
+    saveProtectionBulk: async (payload) => {
+        const res = await fetch(`${API_BASE_URL}/protection/bulk`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to save protection rules");
+        return data;
+    },
+
+    deleteProtectionRule: async (ruleId) => {
+        const res = await fetch(`${API_BASE_URL}/protection/${encodeURIComponent(ruleId)}`, {
+            method: "DELETE"
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to delete protection rule");
+        return data;
+    },
+
     fetchEntityGraph: async (payload) => {
         const res = await fetch(`${API_BASE_URL}/entity_graph`, {
             method: "POST",

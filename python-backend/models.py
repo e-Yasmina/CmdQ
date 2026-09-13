@@ -58,17 +58,54 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ProtectionItem(BaseModel):
+    """A single protection rule for a database/schema/table.
+
+    Levels:
+        full     - Hidden from AI, all operations blocked
+        readonly - Visible in schema, all writes blocked
+        custom   - Visible, specific writes allowed via write_permissions
+        none     - No protection
+
+    write_permissions:
+        List of allowed write ops when level=custom. Subset of:
+        ["insert", "update", "delete"].
+        E.g. ["insert", "update"] means INSERT and UPDATE allowed, DELETE blocked.
+    """
+    id: str
+    level: str = "full"
+    write_permissions: List[str] = []
+    connection_id: str = ""
+    protected_at: str = ""
+
+
 class AIPrompt(BaseModel):
     prompt: str
     command: str
     db_config: ConnectionDetails
     schema_data: Dict[str, Any] = None
     chat_history: List[ChatMessage] = []
-    protected_items: List[str] = []
+    protected_items: List[Any] = []
     session_context: List[str] = []
     attached_file: Dict[str, Any] = None
     selected_table: str = ""
     action: str = ""
+
+    def get_typed_protection_items(self) -> List[ProtectionItem]:
+        """Return protection items in standardized format.
+
+        Handles backward compatibility: if an item is a plain string,
+        converts it to ProtectionItem(id=item, level='full').
+        """
+        result = []
+        for item in self.protected_items:
+            if isinstance(item, str):
+                result.append(ProtectionItem(id=item, level="full"))
+            elif isinstance(item, dict):
+                result.append(ProtectionItem(**item))
+            elif isinstance(item, ProtectionItem):
+                result.append(item)
+        return result
 
 
 class AnalysisRequest(BaseModel):
