@@ -13,6 +13,9 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from sql_safety_checker import SQLSafetyChecker
+from models import ProtectionItem
+
 
 def extract_schema(db_type, host, port, user, password, database):
     """
@@ -98,9 +101,26 @@ def extract_schema(db_type, host, port, user, password, database):
             """
         else:
             constr_query = """
-                SELECT table_schema, table_name, constraint_name, constraint_type, '' as definition
-                FROM information_schema.table_constraints
-                WHERE table_schema = DATABASE();
+                SELECT
+                    tc.table_schema,
+                    tc.table_name,
+                    tc.constraint_name,
+                    tc.constraint_type,
+                    CASE
+                        WHEN tc.constraint_type = 'FOREIGN KEY' THEN
+                            CONCAT('FOREIGN KEY (', kcu.column_name, ') REFERENCES ',
+                                   kcu.referenced_table_name, '(', kcu.referenced_column_name, ')')
+                        WHEN tc.constraint_type = 'PRIMARY KEY' THEN
+                            CONCAT('PRIMARY KEY (', kcu.column_name, ')')
+                        WHEN tc.constraint_type = 'UNIQUE' THEN
+                            CONCAT('UNIQUE (', kcu.column_name, ')')
+                        ELSE ''
+                    END AS definition
+                FROM information_schema.table_constraints tc
+                LEFT JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_schema = DATABASE();
             """
 
         constr_result = session.execute(text(constr_query)).fetchall()
@@ -237,11 +257,45 @@ BASE_PROMPT_TEMPLATE = PromptTemplate(
 
 
 def build_base_prompt(db_config, schema_dict, protected_items, session_context,
-                      attached_file, chat_history, user_prompt):
-    """Builds the complete base prompt for the AI from all context components."""
+                      attached_file, chat_history, user_prompt, relationships=None):
+    """Builds the complete base prompt for the AI from all context components.
+
+    Args:
+        protected_items: List of ProtectionItem dicts (with 'id' and 'level' keys).
+        relationships: Optional list of FK relationship dicts for FK-aware filtering.
+    """
+    # Filter schema based on protection rules before building prompt
+    checker = SQLSafetyChecker([p.dict() if hasattr(p, 'dict') else p for p in (protected_items or [])])
+    has_protection = any(
+        (p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")) != "none"
+        for p in (protected_items or [])
+    )
+    if has_protection:
+        if relationships:
+            schema_dict = checker.filter_schema_for_fk(schema_dict, relationships)
+        else:
+            schema_dict = checker.filter_schema(schema_dict)
+
     metadata_str = build_metadata_str(schema_dict)
     schema_json_str = build_schema_json_str(schema_dict)
-    protection_instruction = build_protection_instruction(protected_items)
+
+    # Only include protection instruction for partial protection (readonly/insert/update/delete)
+    # For full protection, tables are already hidden from schema
+    partial_items = []
+    for p in (protected_items or []):
+        level = p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")
+        if level not in ("full", "none"):
+            bare = (p.id if hasattr(p, 'id') else p.get("id", "")).split("::")[-1]
+            partial_items.append(f"'{bare}' ({level})")
+    if partial_items:
+        prot_list = ", ".join(partial_items)
+        protection_instruction = (
+            f"IMPORTANT: The following items have restricted access: {prot_list}. "
+            f"Respect their permissions — only perform allowed operations on them.\n\n"
+        )
+    else:
+        protection_instruction = ""
+
     session_context_instr = build_session_context_instr(session_context)
     history_str = build_chat_history_str(chat_history)
     attached_str = get_attached_file_prompt(attached_file)
@@ -270,6 +324,23 @@ def extract_and_build_prompt(db_config, protected_items, session_context,
         password=db_config.password,
         database=db_config.database
     )
+
+    # Extract relationships for FK-aware protection filtering
+    relationships = None
+    has_protection = any(
+        (p.level if hasattr(p, 'level') else (p.get("level", "full") if isinstance(p, dict) else "full")) != "none"
+        for p in (protected_items or [])
+    )
+    if has_protection:
+        relationships = extract_relationships(
+            db_type=db_config.db_type,
+            host=db_config.host,
+            port=db_config.port,
+            user=db_config.user,
+            password=db_config.password,
+            database=db_config.database
+        )
+
     return build_base_prompt(
         db_config=db_config,
         schema_dict=schema_dict,
@@ -277,7 +348,8 @@ def extract_and_build_prompt(db_config, protected_items, session_context,
         session_context=session_context,
         attached_file=attached_file,
         chat_history=chat_history,
-        user_prompt=user_prompt
+        user_prompt=user_prompt,
+        relationships=relationships
     )
 
     # TODO: In a future enhancement, the frontend should only send lightweight info
@@ -445,6 +517,395 @@ def get_table_relationships(db_type, host, port, user, password, database,
         "outgoing_fks": outgoing,
         "incoming_fks": incoming
     }
+
+
+def extract_entity_graph_data(db_type, host, port, user, password, database,
+                               schema_name="", include_columns=True,
+                               include_column_types=True, include_pk=True,
+                               include_fk=True, include_not_null=True,
+                               include_enums=True, max_nodes=80):
+    """
+    Extracts entity-relationship graph data for visualization.
+
+    Returns dict with 'nodes' and 'edges' keys suitable for ReactFlow.
+    """
+    session = get_db_connection(
+        db_type=db_type, host=host, port=port,
+        user=user, password=password, dbname=database
+    )
+
+    try:
+        nodes = []
+        edges = []
+        MAX_NODES = max_nodes
+
+        # 1. Get table list
+        if schema_name:
+            if db_type == "postgres":
+                tbl_query = """
+                    SELECT t.table_schema, t.table_name
+                    FROM information_schema.tables t
+                    WHERE t.table_schema = :schema
+                      AND t.table_type = 'BASE TABLE'
+                    ORDER BY t.table_name;
+                """
+                tbl_result = session.execute(text(tbl_query), {"schema": schema_name}).fetchall()
+            else:
+                tbl_query = """
+                    SELECT t.table_schema, t.table_name
+                    FROM information_schema.tables t
+                    WHERE t.table_schema = DATABASE()
+                      AND t.table_type = 'BASE TABLE'
+                    ORDER BY t.table_name;
+                """
+                tbl_result = session.execute(text(tbl_query)).fetchall()
+        else:
+            if db_type == "postgres":
+                tbl_query = """
+                    SELECT t.table_schema, t.table_name
+                    FROM information_schema.tables t
+                    WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+                      AND t.table_type = 'BASE TABLE'
+                    ORDER BY t.table_schema, t.table_name;
+                """
+            else:
+                tbl_query = """
+                    SELECT t.table_schema, t.table_name
+                    FROM information_schema.tables t
+                    WHERE t.table_schema = DATABASE()
+                      AND t.table_type = 'BASE TABLE'
+                    ORDER BY t.table_name;
+                """
+            tbl_result = session.execute(text(tbl_query)).fetchall()
+
+        tables = [(str(row[0]), str(row[1])) for row in tbl_result]
+
+        if include_columns:
+            # 2. Get column metadata for each table
+            col_query_params = {}
+            if db_type == "postgres":
+                if schema_name:
+                    col_query = """
+                        SELECT c.table_schema, c.table_name, c.column_name,
+                               c.data_type, c.is_nullable,
+                               c.character_maximum_length, c.udt_name
+                        FROM information_schema.columns c
+                        WHERE c.table_schema = :schema
+                        ORDER BY c.table_schema, c.table_name, c.ordinal_position;
+                    """
+                    col_query_params = {"schema": schema_name}
+                else:
+                    col_query = """
+                        SELECT c.table_schema, c.table_name, c.column_name,
+                               c.data_type, c.is_nullable,
+                               c.character_maximum_length, c.udt_name
+                        FROM information_schema.columns c
+                        JOIN information_schema.tables t
+                          ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+                        WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
+                          AND t.table_type = 'BASE TABLE'
+                        ORDER BY c.table_schema, c.table_name, c.ordinal_position;
+                    """
+            else:
+                col_query = """
+                    SELECT c.table_schema, c.table_name, c.column_name,
+                           c.data_type, c.is_nullable,
+                           c.character_maximum_length, NULL as udt_name
+                    FROM information_schema.columns c
+                    JOIN information_schema.tables t
+                      ON c.table_schema = t.table_schema AND c.table_name = t.table_name
+                    WHERE c.table_schema = DATABASE()
+                      AND t.table_type = 'BASE TABLE'
+                    ORDER BY c.table_schema, c.table_name, c.ordinal_position;
+                """
+
+            col_result = session.execute(text(col_query), col_query_params).fetchall()
+
+            table_columns = {}
+            for row in col_result:
+                s_name, t_name = str(row[0]), str(row[1])
+                col_name = str(row[2])
+                data_type = str(row[3])
+                is_nullable = str(row[4]) == "YES"
+                char_max_len = row[5]
+                udt_name = str(row[6]) if row[6] else ""
+
+                # Build display type
+                if include_column_types:
+                    if char_max_len and data_type in ("character varying", "varchar"):
+                        display_type = f"varchar({char_max_len})"
+                    elif char_max_len and data_type in ("character", "char"):
+                        display_type = f"char({char_max_len})"
+                    elif data_type == "user-defined" and udt_name:
+                        display_type = udt_name
+                    else:
+                        display_type = data_type
+                else:
+                    display_type = ""
+
+                key = (s_name, t_name)
+                if key not in table_columns:
+                    table_columns[key] = []
+                table_columns[key].append({
+                    "name": col_name,
+                    "type": display_type,
+                    "nullable": is_nullable,
+                    "raw_data_type": data_type,
+                    "udt_name": udt_name,
+                })
+
+            # 3. Get primary keys
+            pk_map = {}
+            if include_pk:
+                if db_type == "postgres":
+                    pk_query = """
+                        SELECT tc.table_schema, tc.table_name, kcu.column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema = kcu.table_schema
+                        WHERE tc.constraint_type = 'PRIMARY KEY'
+                          AND tc.table_schema NOT IN ('information_schema', 'pg_catalog')
+                        ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position;
+                    """
+                else:
+                    pk_query = """
+                        SELECT tc.table_schema, tc.table_name, kcu.column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema = kcu.table_schema
+                        WHERE tc.constraint_type = 'PRIMARY KEY'
+                          AND tc.table_schema = DATABASE()
+                        ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position;
+                    """
+                pk_result = session.execute(text(pk_query)).fetchall()
+                for row in pk_result:
+                    key = (str(row[0]), str(row[1]))
+                    if key not in pk_map:
+                        pk_map[key] = set()
+                    pk_map[key].add(str(row[2]))
+
+            # 4. Get foreign keys (for marking columns + building edges)
+            fk_columns = {}
+            if include_fk or True:  # always fetch for edges
+                if db_type == "postgres":
+                    fk_query = """
+                        SELECT
+                            tc.constraint_name,
+                            tc.table_schema, tc.table_name, kcu.column_name,
+                            ccu.table_schema, ccu.table_name, ccu.column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema = kcu.table_schema
+                        JOIN information_schema.constraint_column_usage ccu
+                          ON tc.constraint_name = ccu.constraint_name
+                          AND tc.table_schema = ccu.table_schema
+                        WHERE tc.constraint_type = 'FOREIGN KEY'
+                          AND tc.table_schema NOT IN ('information_schema', 'pg_catalog')
+                        ORDER BY tc.table_schema, tc.table_name;
+                    """
+                else:
+                    fk_query = """
+                        SELECT
+                            tc.constraint_name,
+                            tc.table_schema, tc.table_name, kcu.column_name,
+                            COALESCE(kcu.referenced_table_schema, tc.table_schema),
+                            kcu.referenced_table_name, kcu.referenced_column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema = kcu.table_schema
+                        WHERE tc.constraint_type = 'FOREIGN KEY'
+                          AND tc.table_schema = DATABASE()
+                        ORDER BY tc.table_schema, tc.table_name;
+                    """
+                print(f"[FK DEBUG] db_type={db_type}, query_type={'postgres' if db_type == 'postgres' else 'mysql'}")
+                fk_result = session.execute(text(fk_query)).fetchall()
+                print(f"[FK DEBUG] FK query returned {len(fk_result)} rows")
+                if fk_result:
+                    for row in fk_result[:3]:
+                        print(f"[FK DEBUG]   row: {row}")
+                fk_edges_seen = set()
+                for row in fk_result:
+                    c_name = str(row[0])
+                    src_schema, src_table, src_col = str(row[1]), str(row[2]), str(row[3])
+                    ref_schema, ref_table, ref_col = str(row[4]), str(row[5]), str(row[6])
+
+                    if include_fk:
+                        src_key = (src_schema, src_table)
+                        if src_key not in fk_columns:
+                            fk_columns[src_key] = set()
+                        fk_columns[src_key].add(src_col)
+
+                    # Build edges
+                    edge_key = (c_name, src_schema, src_table, ref_schema, ref_table)
+                    if edge_key not in fk_edges_seen:
+                        fk_edges_seen.add(edge_key)
+                        edges.append({
+                            "id": c_name,
+                            "source": f"{src_schema}.{src_table}",
+                            "target": f"{ref_schema}.{ref_table}",
+                            "source_column": src_col,
+                            "target_column": ref_col,
+                        })
+                print(f"[FK DEBUG] Edges built so far: {len(edges)}, FK columns marked: {len(fk_columns)}")
+
+            # 4b. Analyze relationship types (1:1, 1:N, M:N)
+            # Group edges by source table
+            table_outgoing = {}
+            for edge in edges:
+                src = edge["source"]
+                table_outgoing.setdefault(src, []).append(edge)
+
+            # Detect junction tables: 2 to 3 FKs to different tables, ≥50% of columns are FKs, and total_cols <= 6.
+            # Large multi-FK tables (e.g. audit_log, progress_tracker with 16 FKs) are domain entities, not simple join tables.
+            junction_tables = set()
+            for src_table, fks in table_outgoing.items():
+                ref_tables = set(e["target"] for e in fks)
+                if 2 <= len(ref_tables) <= 3:
+                    s_parts = src_table.split(".", 1)
+                    if len(s_parts) == 2:
+                        s_schema, s_name = s_parts
+                        fk_cols = fk_columns.get((s_schema, s_name), set())
+                        total_cols = len(table_columns.get((s_schema, s_name), []))
+                        if total_cols > 0 and len(fk_cols) >= total_cols * 0.5 and total_cols <= 6:
+                            junction_tables.add(src_table)
+            print(f"[FK DEBUG] Junction tables detected: {junction_tables}")
+
+            # Build M:N virtual edges for junction tables, classify remaining as 1:N or 1:1
+            analyzed_edges = []
+            seen_m2m = set()
+            for junction in junction_tables:
+                fks = table_outgoing.get(junction, [])
+                ref_list = [(e["target"], e["source_column"], e["target_column"]) for e in fks]
+                j_short = junction.split(".", 1)[1] if "." in junction else junction
+                for i in range(len(ref_list)):
+                    for j in range(i + 1, len(ref_list)):
+                        t1, c1, rc1 = ref_list[i]
+                        t2, c2, rc2 = ref_list[j]
+                        m2m_key = tuple(sorted([t1, t2]))
+                        if m2m_key not in seen_m2m:
+                            seen_m2m.add(m2m_key)
+                            analyzed_edges.append({
+                                "id": f"m2m_{t1}_{t2}",
+                                "source": t1,
+                                "target": t2,
+                                "source_column": "",
+                                "target_column": "",
+                                "relationship_type": "M:N",
+                                "via_table": j_short,
+                            })
+
+            for edge in edges:
+                if edge["source"] in junction_tables:
+                    continue
+                src_parts = edge["source"].split(".", 1)
+                is_11 = False
+                if len(src_parts) == 2:
+                    pk_cols = pk_map.get((src_parts[0], src_parts[1]), set())
+                    is_11 = edge["source_column"] in pk_cols and len(pk_cols) <= 2
+                edge["relationship_type"] = "1:1" if is_11 else "1:N"
+                edge["via_table"] = None
+                analyzed_edges.append(edge)
+
+            edges = analyzed_edges
+            print(f"[FK DEBUG] Final edges: {len(edges)} (M:N={len(seen_m2m)}, junctions={len(junction_tables)})")
+
+            # 5. Get enums (Postgres only)
+            enum_map = {}
+            if include_enums and db_type == "postgres":
+                enum_query = """
+                    SELECT n.nspname AS schema_name,
+                           t.typname AS type_name,
+                           e.enumlabel AS enum_value
+                    FROM pg_type t
+                    JOIN pg_enum e ON t.oid = e.enumtypid
+                    JOIN pg_namespace n ON t.typnamespace = n.oid
+                    WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
+                    ORDER BY n.nspname, t.typname, e.enumsortorder;
+                """
+                try:
+                    enum_result = session.execute(text(enum_query)).fetchall()
+                    for row in enum_result:
+                        s_name, type_name, enum_val = str(row[0]), str(row[1]), str(row[2])
+                        key = (s_name, type_name)
+                        if key not in enum_map:
+                            enum_map[key] = []
+                        enum_map[key].append(enum_val)
+                except Exception:
+                    pass  # enums might not be accessible
+
+            # 6. Build nodes
+            for s_name, t_name in tables:
+                if len(nodes) >= MAX_NODES:
+                    break
+
+                node_id = f"{s_name}.{t_name}"
+                node = {
+                    "id": node_id,
+                    "schema": s_name,
+                    "table": t_name,
+                }
+
+                if include_columns:
+                    cols = table_columns.get((s_name, t_name), [])
+                    pk_cols = pk_map.get((s_name, t_name), set())
+                    fk_cols = fk_columns.get((s_name, t_name), set())
+
+                    enriched_cols = []
+                    for col in cols:
+                        enriched = {
+                            "name": col["name"],
+                            "type": col["type"],
+                            "nullable": col["nullable"],
+                            "is_pk": col["name"] in pk_cols,
+                            "is_fk": col["name"] in fk_cols,
+                        }
+
+                        if include_not_null:
+                            enriched["not_null"] = not col["nullable"]
+                        else:
+                            enriched.pop("not_null", None)
+
+                        # Enum values for user-defined types
+                        if include_enums and col["raw_data_type"] == "user-defined":
+                            enum_vals = enum_map.get((s_name, col["udt_name"]), [])
+                            enriched["enum_values"] = enum_vals
+                        else:
+                            enriched["enum_values"] = []
+
+                        enriched_cols.append(enriched)
+
+                    node["columns"] = enriched_cols
+                else:
+                    node["columns"] = []
+
+                nodes.append(node)
+
+        else:
+            # No columns requested — just table nodes
+            for s_name, t_name in tables:
+                if len(nodes) >= MAX_NODES:
+                    break
+                nodes.append({
+                    "id": f"{s_name}.{t_name}",
+                    "schema": s_name,
+                    "table": t_name,
+                    "columns": [],
+                })
+
+        truncated = len(tables) > MAX_NODES
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": truncated,
+            "total_tables": len(tables),
+        }
+
+    finally:
+        session.close()
 
 
 def parse_table_mentions(text):

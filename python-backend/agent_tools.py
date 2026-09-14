@@ -1,59 +1,48 @@
 import json
-import urllib.parse
-import re
 from typing import Any
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from sqlalchemy import text, create_engine
+
+from sql_executor import SqlExecutor
+from sql_safety_checker import SQLSafetyChecker
 
 
 def create_sql_agent(
     llm: BaseChatModel,
     system_prompt: str,
     db_config: Any,
-    protected_items: list[str],
+    protected_items: list,
     session_context: list[str],
     max_iterations: int = 10
 ):
-    safe_user = urllib.parse.quote_plus(db_config.user)
-    safe_password = urllib.parse.quote_plus(db_config.password)
+    checker = SQLSafetyChecker(protected_items)
 
     @tool
     def execute_sql(query: str) -> str:
         """Execute a SQL query on the connected database and return results as JSON."""
-        upper = query.upper()
-        if any(kw in upper for kw in ["DROP ", "ALTER ", "TRUNCATE "]):
-            return "BLOCKED BY SAFETY SYSTEM: Destructive commands are not allowed."
-        if "DELETE " in upper and "WHERE " not in upper:
-            return "BLOCKED BY SAFETY SYSTEM: DELETE without WHERE is not allowed."
+        is_safe, error = checker.check_all(query, context="agent")
+        if not is_safe:
+            return f"BLOCKED BY SAFETY SYSTEM: {error}"
 
-        for p in protected_items:
-            p_bare = p.split("::")[-1]
-            if p_bare.lower() in query.lower():
-                return f"BLOCKED BY SAFETY SYSTEM: '{p_bare}' is protected."
+        from secret_utils import mask_password
 
-        if db_config.db_type == "postgres":
-            base_url = f"postgresql+psycopg2://{safe_user}:{safe_password}@{db_config.host}:{db_config.port}/"
-            db_name = db_config.database if db_config.database else "postgres"
-        else:
-            base_url = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{db_config.host}:{db_config.port}/"
-            db_name = db_config.database
-
-        engine = create_engine(base_url + db_name)
         try:
-            with engine.begin() as conn:
-                for ctx_cmd in session_context:
-                    if ctx_cmd.strip():
-                        conn.execute(text(ctx_cmd))
-                result = conn.execute(text(query))
-                if result.returns_rows:
-                    rows = result.fetchall()
-                    keys = list(result.keys())
-                    return json.dumps([dict(zip(keys, row)) for row in rows], default=str)
-                return "Query executed successfully (no rows returned)."
+            executor = SqlExecutor(db_config)
+            sql_result = executor.execute(
+                query,
+                session_context=session_context,
+                max_rows=5000,
+            )
+            if sql_result.is_error:
+                return f"SQL Error: {mask_password(sql_result.error)}"
+            if sql_result.returns_rows:
+                return json.dumps(sql_result.rows, default=str)
+            return "Query executed successfully (no rows returned)."
+        except MemoryError:
+            return "SQL Error: Result set too large. Add a LIMIT clause to your query."
         except Exception as e:
-            return f"SQL Error: {str(e)}"
+            return f"SQL Error: {mask_password(str(e))}"
 
     graph = create_agent(
         model=llm,

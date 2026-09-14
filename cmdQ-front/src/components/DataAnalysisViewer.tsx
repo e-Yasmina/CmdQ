@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ScrollArea from './ScrollArea';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import ReactMarkdown from 'react-markdown';
 import { PALETTE } from '../theme/palette';
+import { CopyIcon } from './icons/CopyIcon';
 
 function MetricCard({ title, value, icon, description, status, children }) {
     const statusColor = status === 'danger' ? 'text-rose-500'
@@ -26,6 +27,8 @@ function MetricCard({ title, value, icon, description, status, children }) {
 }
 
 export default function DataAnalysisViewer({ result }) {
+    const [copied, setCopied] = useState(false);
+
     if (!result || !result.metrics) {
         return <div className="p-4 text-secondary italic">No data metrics available.</div>;
     }
@@ -62,11 +65,47 @@ export default function DataAnalysisViewer({ result }) {
             </div>
 
             {ai_summary && (
-                <div className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary" style={{ boxShadow: `inset 0 0 15px ${PALETTE.shadowInset}` }}>
-                    <div className="flex items-center gap-2 mb-2">
+                <div
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const range = document.createRange();
+                            range.selectNodeContents(e.currentTarget.querySelector('.ai-summary-content') || e.currentTarget);
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                        }
+                    }}
+                    className="bg-primary/5 border border-primary/20 rounded p-4 text-sm font-ui text-textPrimary select-text outline-none focus:ring-1 focus:ring-primary/40"
+                    style={{ boxShadow: 'inset 0 0 15px var(--color-shadow-inset, rgba(0,0,0,0.1))' }}
+                >
+                    <div className="flex items-center justify-between gap-2 mb-2">
                         <span className="text-primary font-bold">✨ AI Insights:</span>
+                        <button
+                            onClick={() => {
+                                navigator.clipboard.writeText(ai_summary);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                            }}
+                            className="text-[10px] text-gray-400 hover:text-primary transition-colors flex items-center gap-1 cursor-pointer bg-transparent hover:bg-white/5 px-1.5 py-0.5 rounded"
+                            title="Copy AI Insights"
+                        >
+                            {copied ? (
+                                <>
+                                    <svg className="w-3 h-3 text-emerald-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                                    <span className="text-emerald-400">Copied</span>
+                                </>
+                            ) : (
+                                <>
+                                    <CopyIcon className="w-3 h-3" />
+                                    <span>Copy Text</span>
+                                </>
+                            )}
+                        </button>
                     </div>
-                    <div className="text-gray-300 leading-relaxed overflow-x-auto">
+                    <div className="text-textPrimary leading-relaxed overflow-x-auto select-text ai-summary-content">
                         <ReactMarkdown
                             components={{
                                 h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 text-primary" {...props} />,
@@ -77,8 +116,8 @@ export default function DataAnalysisViewer({ result }) {
                                 ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-2 space-y-1" {...props} />,
                                 li: ({ node, ...props }) => <li className="" {...props} />,
                                 strong: ({ node, ...props }) => <strong className="font-bold text-textPrimary" {...props} />,
-                                em: ({ node, ...props }) => <em className="italic text-gray-400" {...props} />,
-                                code: ({ node, inline, ...props }) => inline ? <code className="bg-black/30 text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono" {...props} /> : <pre className="bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-400"><code {...props} /></pre>,
+                                em: ({ node, ...props }) => <em className="italic opacity-70" {...props} />,
+                                code: ({ node, className, children, ...props }) => (!className && !String(children).includes('\n')) ? <code className="bg-black/10 dark:bg-black/30 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded text-xs font-mono inline" {...props}>{children}</code> : <pre className="bg-black/10 dark:bg-black/30 p-3 rounded my-2 overflow-x-auto text-xs font-mono text-emerald-600 dark:text-emerald-400"><code {...props}>{children}</code></pre>,
                             }}
                         >
                             {ai_summary}

@@ -11,6 +11,8 @@ node_modules/
 dist/
 dist-ssr/
 build/
+docs/
+RACE_CONDITION_FIX.md
 *.local
 .env
 .env.development.local
@@ -46,12 +48,16 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+registered_models.json
 .venv
 venv/
 ENV/
 env.bak/
 venv.bak/
 .env
+
+# === Data simples ===
+sample_dbs/
 
 # === Editor directories and files ===
 .agent/

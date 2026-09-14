@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, ANY
 from fastapi.testclient import TestClient
 import main
+import cli_client
+import persistence_manager
 from main import app
 
 client = TestClient(app)
@@ -36,14 +38,14 @@ def isolate_file_storage(monkeypatch):
 
     models_file = test_dir / "registered_models.json"
     models_file.write_text("[]", encoding="utf-8")
-    monkeypatch.setattr(main, "MODELS_FILE", str(models_file))
+    monkeypatch.setattr(cli_client, "MODELS_FILE", str(models_file))
 
     storage_files = {}
-    for key in main.storage.files:
+    for key in persistence_manager.storage.files:
         file_path = test_dir / f"{key}.json"
         file_path.write_text("[]", encoding="utf-8")
         storage_files[key] = str(file_path)
-    monkeypatch.setattr(main.storage, "files", storage_files)
+    monkeypatch.setattr(persistence_manager.storage, "files", storage_files)
 
     yield
 
@@ -51,61 +53,103 @@ def isolate_file_storage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_db_connection():
-    """Mocks get_db_connection at main level (imported at module top)."""
-    with patch("main.get_db_connection") as mock:
-        mock_session = MagicMock()
-        mock_result = MagicMock()
-        mock_result.returns_rows = True
-        mock_result.keys.return_value = ["id", "name"]
-        mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
-        mock_session.execute.return_value = mock_result
-        mock.return_value = mock_session
-        yield mock
+    """Mocks get_db_connection and SqlExecutor engine creation in all route modules."""
+    patchers = [
+        patch("routes.connection.get_db_connection"),
+        patch("routes.analysis.get_db_connection"),
+        patch("routes.export.get_db_connection"),
+        patch("routes.import_routes.get_db_connection"),
+        patch("routes.etl.get_db_connection"),
+        patch("sql_executor.build_engine"),
+    ]
+    mocks = [p.start() for p in patchers]
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_result.returns_rows = True
+    mock_result.keys.return_value = ["id", "name"]
+    mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+    mock_result.rowcount = 2
+    mock_session.execute.return_value = mock_result
+
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_result
+    mock_conn.begin.return_value.__enter__.return_value = mock_conn
+    mock_engine = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    for m in mocks[:5]:
+        m.return_value = mock_session
+    mocks[5].return_value = mock_engine
+    yield mocks[0]
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture(autouse=True)
 def mock_extract_schema():
-    """Mocks extract_schema at main level (imported at module top)."""
-    with patch("main.extract_schema") as mock:
-        mock.return_value = {
-            "public": {
-                "users": {
-                    "columns": [{"name": "id", "type": "integer"}, {"name": "name", "type": "text"}],
-                    "primary_key": ["id"]
-                }
+    """Mocks extract_schema in route modules that import it."""
+    patchers = [
+        patch("routes.connection.extract_schema"),
+        patch("routes.ai.extract_schema"),
+    ]
+    mocks = [p.start() for p in patchers]
+    mock_schema = {
+        "public": {
+            "users": {
+                "columns": [{"name": "id", "type": "integer"}, {"name": "name", "type": "text"}],
+                "primary_key": ["id"]
             }
         }
-        yield mock
+    }
+    for m in mocks:
+        m.return_value = mock_schema
+    yield mocks[0]
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture
 def mock_engine():
-    """Patches create_engine at both main and sqlalchemy level."""
+    """Patches create_engine at legacy route modules and source level."""
     mock_conn = MagicMock()
     mock_result = MagicMock()
     mock_result.returns_rows = True
     mock_result.keys.return_value = ["id", "name"]
     mock_result.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+    mock_result.rowcount = 2
     mock_conn.execute.return_value = mock_result
     mock_conn.begin.return_value.__enter__.return_value = mock_conn
     mock_engine_instance = MagicMock()
     mock_engine_instance.begin.return_value.__enter__.return_value = mock_conn
     mock_engine_instance.connect.return_value.__enter__.return_value = mock_conn
 
-    with patch("main.create_engine", return_value=mock_engine_instance), \
-         patch("sqlalchemy.create_engine", return_value=mock_engine_instance):
-        yield
+    patchers = [
+        patch("routes.connection.create_engine", return_value=mock_engine_instance),
+        patch("routes.import_routes.create_engine", return_value=mock_engine_instance),
+        patch("helpers.create_engine", return_value=mock_engine_instance),
+        patch("sqlalchemy.create_engine", return_value=mock_engine_instance),
+        patch("sql_executor.build_engine", return_value=mock_engine_instance),
+    ]
+    mocks = [p.start() for p in patchers]
+    yield
+    for p in patchers:
+        p.stop()
 
 
 @pytest.fixture
-def mock_subprocess():
-    """Mocks subprocess.run to return a fake CLI response with SQL block."""
-    with patch("main.subprocess.run") as mock_run:
-        mock_proc = MagicMock()
-        mock_proc.stdout = "Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone."
-        mock_proc.stderr = ""
-        mock_run.return_value = mock_proc
+def mock_subprocess_gemini():
+    """Mocks _run_subprocess_with_files in the ai route module."""
+    with patch("routes.ai._run_subprocess_with_files") as mock_run:
+        mock_run.return_value = ("Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone.", "")
         yield mock_run
+
+
+@pytest.fixture
+def mock_which():
+    """Mocks shutil.which in cli_client so command resolution passes."""
+    with patch("cli_client.shutil.which") as m:
+        m.return_value = "C:\\dummy\\cmd.exe"
+        yield m
 
 
 @pytest.fixture
@@ -139,7 +183,7 @@ def mock_agent():
 @pytest.fixture
 def mock_no_models():
     """Ensures get_registered_models returns empty list (forces CLI path)."""
-    with patch("main.get_registered_models", return_value=[]):
+    with patch("cli_client.get_registered_models", return_value=[]):
         yield
 
 
@@ -154,7 +198,7 @@ def mock_models():
         "api_key": "sk-test",
         "base_url": ""
     }
-    with patch("main.get_registered_models", return_value=[model]):
+    with patch("cli_client.get_registered_models", return_value=[model]):
         yield
 
 
@@ -169,7 +213,7 @@ def mock_llm_client():
 @pytest.fixture(autouse=True)
 def mock_shutil_which():
     """Mocks shutil.which to control CLI detection."""
-    with patch("main.shutil.which") as mock:
+    with patch("routes.ai.shutil.which") as mock:
         mock.return_value = None
         yield mock
 
@@ -305,7 +349,9 @@ class TestQuery:
         body = resp.json()
         assert body["status"] == "success"
         assert "data" in body
+        assert "columns" in body
         assert isinstance(body["data"], list)
+        assert isinstance(body["columns"], list)
         assert "message" in body
 
     def test_missing_query(self, db_config):
@@ -335,7 +381,9 @@ class TestTableData:
         body = resp.json()
         assert body["status"] == "success"
         assert "data" in body
+        assert "columns" in body
         assert isinstance(body["data"], list)
+        assert isinstance(body["columns"], list)
 
     def test_with_pagination(self, db_config):
         resp = client.post("/table_data", json={
@@ -443,7 +491,6 @@ class TestRegisteredModelsEndpoints:
         body = resp.json()
         assert body["status"] == "success"
 
-        # Verify it's gone
         resp = client.get("/ai/registered_models")
         assert len(resp.json()["models"]) == 0
 
@@ -461,7 +508,7 @@ class TestRegisteredModelsEndpoints:
 class TestLaunchCli:
     def test_returns_success(self, db_config):
         """launch_cli always returns success as it spawns the command."""
-        with patch("main.subprocess.Popen"):
+        with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_cli", json={
                 "command": "gemini",
                 "db_config": db_config
@@ -477,7 +524,7 @@ class TestLaunchCli:
 
 class TestLaunchDebug:
     def test_returns_success(self, db_config):
-        with patch("main.subprocess.Popen"):
+        with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_debug", json={
                 "command": "gemini",
                 "db_config": db_config
@@ -541,13 +588,10 @@ class TestAnalyzeEndpoints:
 # ===========================================================================
 
 class TestTranslateTable:
-    def test_valid_request(self, db_config):
+    def test_valid_request(self, db_config, mock_which):
         """Translate expects subprocess to return valid JSON."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = '[{"id": 1, "name": "Alice"}]'
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ('[{"id": 1, "name": "Alice"}]', "")
             resp = client.post("/ai/translate_table", json={
                 "command": "gemini",
                 "table_data": [{"id": 1, "name": "Alice"}]
@@ -631,7 +675,7 @@ class TestAiPrompt:
         assert isinstance(kwargs["system_prompt"], str)
         assert len(kwargs["system_prompt"]) > 0
 
-    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """CLI path: returns the same response shape as API path."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",
@@ -647,7 +691,7 @@ class TestAiPrompt:
         assert body["extracted_sql"] == "SELECT * FROM users;"
         assert isinstance(body["data"], list)
 
-    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """CLI path: extracted SQL is executed against the database."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",
@@ -657,13 +701,10 @@ class TestAiPrompt:
         body = resp.json()
         assert body["data"][0]["id"] == 1
 
-    def test_cli_path_no_sql_in_response(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_no_sql_in_response(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: when no SQL block is in output, data stays empty."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "Just a plain text response with no SQL."
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("Just a plain text response with no SQL.", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Hello", "db_config": db_config
             })
@@ -672,13 +713,10 @@ class TestAiPrompt:
             assert body["extracted_sql"] is None
             assert body["data"] == []
 
-    def test_cli_path_safety_drop(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_safety_drop(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: DROP statements are blocked."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "```sql\nDROP TABLE users;\n```"
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("```sql\nDROP TABLE users;\n```", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Drop users table", "db_config": db_config
             })
@@ -686,22 +724,19 @@ class TestAiPrompt:
             assert body["status"] == "success"
             assert "BLOCKED BY SAFETY SYSTEM" in body["data"][0]["error"]
 
-    def test_cli_path_safety_delete_without_where(self, db_config, mock_no_models, mock_engine):
+    def test_cli_path_safety_delete_without_where(self, db_config, mock_no_models, mock_which, mock_engine):
         """CLI path: DELETE without WHERE is blocked."""
-        with patch("main.subprocess.run") as mock_run:
-            mock_proc = MagicMock()
-            mock_proc.stdout = "```sql\nDELETE FROM users;\n```"
-            mock_proc.stderr = ""
-            mock_run.return_value = mock_proc
+        with patch("cli_client._run_subprocess_with_files") as mock_run:
+            mock_run.return_value = ("```sql\nDELETE FROM users;\n```", "")
             resp = client.post("/ai/prompt", json={
                 "command": "some-cli", "prompt": "Delete all", "db_config": db_config
             })
             body = resp.json()
             assert "BLOCKED BY SAFETY SYSTEM" in body["data"][0]["error"]
 
-    def test_cli_path_timeout(self, db_config, mock_no_models):
+    def test_cli_path_timeout(self, db_config, mock_no_models, mock_which):
         """CLI path: timeout returns a user-friendly message."""
-        with patch("main.subprocess.run") as mock_run:
+        with patch("cli_client.subprocess.run") as mock_run:
             import subprocess
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=300)
             resp = client.post("/ai/prompt", json={
@@ -724,7 +759,7 @@ class TestAiPrompt:
         })
         assert resp.status_code == 200
 
-    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess, mock_engine):
+    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
         """Attached file metadata is accepted."""
         resp = client.post("/ai/prompt", json={
             "command": "gemini",
@@ -826,7 +861,6 @@ class TestImport:
             data={"format": "xyz"}
         )
         body = resp.json()
-        # The endpoint may succeed (treating it as a generic file) or fail
         assert "status" in body
 
     def test_import_table_missing_file(self, db_config):

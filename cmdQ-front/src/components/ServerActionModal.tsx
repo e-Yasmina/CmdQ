@@ -1,15 +1,32 @@
 import { useState } from 'react';
 
-export default function ServerActionModal({ type, server, onClose, onConfirm }) {
+export default function ServerActionModal({ type, server, onClose, onConfirm, existingConnections = [] }) {
     const [newName, setNewName] = useState(server.config.server_name || server.id);
     const [selectedBackupDb, setSelectedBackupDb] = useState(server.databases?.[0] || "");
     const [isProcessing, setIsProcessing] = useState(false);
+    const [errorMsg, setErrorMsg] = useState("");
 
     const handleConfirm = async () => {
-        setIsProcessing(true);
+        setErrorMsg("");
         if (type === 'rename') {
-            await onConfirm(newName);
+            const trimmed = newName.trim();
+            if (!trimmed) {
+                setErrorMsg("Server name cannot be empty.");
+                return;
+            }
+            const conflict = existingConnections.find(c =>
+                c.id !== server.id &&
+                ((c.config?.server_name && c.config.server_name.trim().toLowerCase() === trimmed.toLowerCase()) ||
+                 (c.id && c.id.toLowerCase() === trimmed.toLowerCase()))
+            );
+            if (conflict) {
+                setErrorMsg(`A server named "${trimmed}" already exists.`);
+                return;
+            }
+            setIsProcessing(true);
+            await onConfirm(trimmed);
         } else if (type === 'backup') {
+            setIsProcessing(true);
             await onConfirm(selectedBackupDb);
         }
         setIsProcessing(false);
@@ -29,6 +46,12 @@ export default function ServerActionModal({ type, server, onClose, onConfirm }) 
                 <h2 className="text-xl font-bold text-primary flex items-center gap-2 capitalize">
                     {type === 'properties' ? '📋 Server Properties' : type === 'rename' ? '✏️ Rename Server' : '💾 Database Backup'}
                 </h2>
+
+                {errorMsg && (
+                    <div className="bg-red-500/10 border border-red-500/50 text-red-400 p-2 rounded text-xs">
+                        {errorMsg}
+                    </div>
+                )}
 
                 {type === 'rename' && (
                     <div className="flex flex-col gap-2">
@@ -86,7 +109,7 @@ export default function ServerActionModal({ type, server, onClose, onConfirm }) 
                             </select>
                         </div>
                         <p className="text-[10px] text-yellow-500/80 italic mt-1">
-                            Note: This will trigger a `pg_dump` or `mysqldump` in the background.
+                            The database schema and data will be exported as a SQL dump.
                         </p>
                     </div>
                 )}

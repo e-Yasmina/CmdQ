@@ -1,16 +1,77 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+:root {
+  --color-background: #0D1117;
+  --color-panel: #161B22;
+  --color-border: #30363D;
+  --color-primary: #FB923C;
+  --color-secondary: #58A6FF;
+  --color-text-primary: #C9D1D9;
+  --color-text-secondary: #8B949E;
+  --color-tooltip-bg: #1e1e24;
+  --color-chart-border: #30363D;
+  --color-shadow-inset: rgba(0, 0, 0, 0.2);
+  --color-input-bg: #0D1117;
+  --color-hover-bg: rgba(255, 255, 255, 0.05);
+  --color-translate-bg: #2a1b38;
+  --color-translate-border: rgba(210, 136, 255, 0.5);
+  --color-translate-text: #e0a8ff;
+  --color-translate-hover-bg: #d288ff;
+  --color-translate-hover-text: #000000;
+}
+
+[data-theme="light"] {
+  --color-background: #F6F8FA;
+  --color-panel: #FFFFFF;
+  --color-border: #D0D7DE;
+  --color-primary: #EA580C;
+  --color-secondary: #0969DA;
+  --color-text-primary: #24292F;
+  --color-text-secondary: #57606A;
+  --color-tooltip-bg: #FFFFFF;
+  --color-chart-border: #D0D7DE;
+  --color-shadow-inset: rgba(0, 0, 0, 0.04);
+  --color-input-bg: #FFFFFF;
+  --color-hover-bg: rgba(0, 0, 0, 0.04);
+  --color-translate-bg: #F3E8FF;
+  --color-translate-border: rgba(168, 85, 247, 0.4);
+  --color-translate-text: #7E22CE;
+  --color-translate-hover-bg: #A855F7;
+  --color-translate-hover-text: #FFFFFF;
+}
+
+[data-theme="dark"] {
+  --color-background: #0D1117;
+  --color-panel: #161B22;
+  --color-border: #30363D;
+  --color-primary: #FB923C;
+  --color-secondary: #58A6FF;
+  --color-text-primary: #C9D1D9;
+  --color-text-secondary: #8B949E;
+  --color-tooltip-bg: #1e1e24;
+  --color-chart-border: #30363D;
+  --color-shadow-inset: rgba(0, 0, 0, 0.2);
+  --color-input-bg: #0D1117;
+  --color-hover-bg: rgba(255, 255, 255, 0.05);
+  --color-translate-bg: #2a1b38;
+  --color-translate-border: rgba(210, 136, 255, 0.5);
+  --color-translate-text: #e0a8ff;
+  --color-translate-hover-bg: #d288ff;
+  --color-translate-hover-text: #000000;
+}
+
 @layer base {
   body {
     @apply bg-background text-textPrimary font-ui antialiased overflow-hidden m-0 p-0;
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 }
 
 @layer utilities {
   .custom-scrollbar {
     scrollbar-width: thin;
-    scrollbar-color: theme('colors.border') transparent;
+    scrollbar-color: var(--color-border) transparent;
   }
 
   .custom-scrollbar::-webkit-scrollbar {
@@ -23,18 +84,18 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background-color: theme('colors.border');
+    background-color: var(--color-border);
     border-radius: 4px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background-color: theme('colors.secondary');
+    background-color: var(--color-secondary);
   }
 
   /* Target CodeMirror scroller for custom scrollbars */
   .custom-cm .cm-scroller {
     scrollbar-width: thin;
-    scrollbar-color: theme('colors.border') transparent;
+    scrollbar-color: var(--color-border) transparent;
   }
 
   .custom-cm .cm-scroller::-webkit-scrollbar {
@@ -47,12 +108,12 @@
   }
 
   .custom-cm .cm-scroller::-webkit-scrollbar-thumb {
-    background-color: theme('colors.border');
+    background-color: var(--color-border);
     border-radius: 4px;
   }
 
   .custom-cm .cm-scroller::-webkit-scrollbar-thumb:hover {
-    background-color: theme('colors.secondary');
+    background-color: var(--color-secondary);
   }
 
   .custom-cm .cm-editor.cm-focused {

@@ -12,8 +12,11 @@ def get_llm(provider: str, api_key: str, model: str, base_url: str = "") -> Base
             base_url=base_url or None
         )
     elif provider == "gemini":
+        target_model = model
+        # if target_model in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.0-pro", "gemini-1.0"):
+        #     target_model = "gemini-3.6-flash"
         return ChatGoogleGenerativeAI(
-            model=model,
+            model=target_model,
             google_api_key=api_key
         )
     elif provider == "anthropic":
