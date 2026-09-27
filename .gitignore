@@ -27,7 +27,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-test_*.py
 diag_*.py
 probe_*.py
 env/
