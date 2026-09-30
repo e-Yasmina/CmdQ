@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -183,7 +184,10 @@ async def ai_prompt(payload: AIPrompt):
         for schema_name, table_name in mentions:
             user_prompt = user_prompt.replace(f"@{schema_name}.{table_name}", f"{schema_name}.{table_name}")
         try:
-            schema_dict = extract_schema(
+            # Blocking DB work: offloaded so a slow database cannot stall the
+            # event loop and take the whole API down with it.
+            schema_dict = await asyncio.to_thread(
+                extract_schema,
                 db_type=cfg.db_type, host=cfg.host, port=cfg.port,
                 user=cfg.user, password=cfg.password, database=cfg.database
             )
@@ -207,7 +211,8 @@ async def ai_prompt(payload: AIPrompt):
         all_relationships = None
         mentions_context = ""
         if mentions:
-            all_relationships = extract_relationships(
+            all_relationships = await asyncio.to_thread(
+                extract_relationships,
                 db_type=cfg.db_type, host=cfg.host, port=cfg.port,
                 user=cfg.user, password=cfg.password, database=cfg.database
             )
@@ -222,7 +227,8 @@ async def ai_prompt(payload: AIPrompt):
         if target_table:
             t_schema, t_table = target_table
             if all_relationships is None:
-                all_relationships = extract_relationships(
+                all_relationships = await asyncio.to_thread(
+                    extract_relationships,
                     db_type=cfg.db_type, host=cfg.host, port=cfg.port,
                     user=cfg.user, password=cfg.password, database=cfg.database
                 )
@@ -243,7 +249,8 @@ async def ai_prompt(payload: AIPrompt):
 
         # Extract relationships for FK-aware protection filtering if not already done
         if all_relationships is None and payload.get_typed_protection_items():
-            all_relationships = extract_relationships(
+            all_relationships = await asyncio.to_thread(
+                extract_relationships,
                 db_type=cfg.db_type, host=cfg.host, port=cfg.port,
                 user=cfg.user, password=cfg.password, database=cfg.database
             )
@@ -372,7 +379,7 @@ async def ai_prompt(payload: AIPrompt):
                         execution_results = [{"error": f"BLOCKED BY SAFETY SYSTEM: {safety_error}"}]
                     else:
                         executor = SqlExecutor(cfg)
-                        sql_result = executor.execute(extracted_sql)
+                        sql_result = await asyncio.to_thread(executor.execute, extracted_sql)
                         if sql_result.is_error:
                             execution_results = [{"error": mask_password(sql_result.error)}]
                         else:

@@ -12,6 +12,13 @@ _engine_cache: dict = {}
 _engine_cache_lock = threading.Lock()
 _ENGINE_CACHE_TTL = 300  # seconds
 
+# Every query runs on the event loop thread, so an unbounded connect or query
+# wedges the whole API: the socket stays open and connections queue up, but no
+# request is ever serviced. These bounds turn a silent hang into a real error.
+_CONNECT_TIMEOUT = 10    # seconds, TCP connect
+_STATEMENT_TIMEOUT = 15  # seconds, server-side query execution
+_POOL_TIMEOUT = 10      # seconds, waiting for a free pool connection
+
 
 def _cache_key(cfg, database=None, driver=None, isolation_level=None):
     return (
@@ -48,7 +55,17 @@ def build_engine(cfg, database=None, driver=None, isolation_level=None):
         if entry and (now - entry["ts"]) < _ENGINE_CACHE_TTL:
             return entry["engine"]
         url = cfg.build_url(database=database, driver=driver)
-        kwargs = {"pool_size": 5, "max_overflow": 10}
+        kwargs = {
+            "pool_size": 5,
+            "max_overflow": 10,
+            "pool_timeout": _POOL_TIMEOUT,
+        }
+        connect_args = {"connect_timeout": _CONNECT_TIMEOUT}
+        if driver == "psycopg2":
+            # Server-side bound, so a runaway query is aborted by Postgres
+            # itself rather than only being detected on the client.
+            connect_args["options"] = f"-c statement_timeout={_STATEMENT_TIMEOUT * 1000}"
+        kwargs["connect_args"] = connect_args
         if isolation_level:
             kwargs["isolation_level"] = isolation_level
         engine = create_engine(url, **kwargs)
