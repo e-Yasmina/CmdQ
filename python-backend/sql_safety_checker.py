@@ -31,18 +31,27 @@ class ProtectionLevel(str, Enum):
 # All possible write permission values
 ALL_WRITE_OPS = frozenset({"insert", "update", "delete"})
 
+TABLE_IDENT_PATTERN = r'((?:[a-zA-Z0-9_]+|"[^"]+"|`[^`]+`|\[[^\]]+\])(?:\s*\.\s*(?:[a-zA-Z0-9_]+|"[^"]+"|`[^`]+`|\[[^\]]+\]))?)'
+
 # Patterns to extract table references from SQL.
 # Order matters: specific write patterns FIRST, then generic read patterns.
 # This ensures DELETE FROM logs marks 'logs' as write, not read.
 _TABLE_EXTRACT_PATTERNS = [
-    (re.compile(r'\bINSERT\s+INTO\s+[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "insert"),
-    (re.compile(r'\bUPDATE\s+[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "update"),
-    (re.compile(r'\bDELETE\s+FROM\s+[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "delete"),
-    (re.compile(r'\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "ddl"),
-    (re.compile(r'\bALTER\s+TABLE\s+[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "ddl"),
-    (re.compile(r'\bTRUNCATE\s+(?:TABLE\s+)?[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "write", "ddl"),
-    (re.compile(r'\b(?:FROM|JOIN)\s+[`"\[]?(\w+(?:\.\w+)?)[`"\]]?', re.IGNORECASE), "read", None),
+    (re.compile(rf'\bINSERT\s+INTO\s+{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "insert"),
+    (re.compile(rf'\bUPDATE\s+{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "update"),
+    (re.compile(rf'\bDELETE\s+FROM\s+{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "delete"),
+    (re.compile(rf'\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "ddl"),
+    (re.compile(rf'\bALTER\s+TABLE\s+{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "ddl"),
+    (re.compile(rf'\bTRUNCATE\s+(?:TABLE\s+)?{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "ddl"),
+    (re.compile(rf'\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{TABLE_IDENT_PATTERN}', re.IGNORECASE), "write", "ddl"),
+    (re.compile(rf'\b(?:FROM|JOIN)\s+{TABLE_IDENT_PATTERN}', re.IGNORECASE), "read", None),
 ]
+
+
+def normalize_table_ref(raw: str) -> str:
+    cleaned = re.sub(r'[`"\[\]]', '', raw)
+    cleaned = re.sub(r'\s*\.\s*', '.', cleaned)
+    return cleaned.strip().lower()
 
 
 @dataclass
@@ -78,6 +87,50 @@ class ProtectionRule:
             return (parts[0].lower(), parts[1].lower())
         return None
 
+    def matches(self, schema_name: Optional[str], table_name: str) -> bool:
+        """Check if this rule matches the given table (and optional schema)."""
+        table_clean = table_name.lower()
+        schema_clean = schema_name.lower() if schema_name else None
+
+        if "." in table_clean:
+            s_part, t_part = table_clean.split(".", 1)
+            schema_clean = schema_clean or s_part
+            table_clean = t_part
+
+        parts = [p.lower() for p in self.id.split("::")]
+
+        # Case 1: 4 or more parts (e.g. conn::db::schema::table)
+        if len(parts) >= 4:
+            rule_schema = parts[-2]
+            rule_table = parts[-1]
+            if schema_clean:
+                return (rule_schema == schema_clean) and (rule_table == table_clean)
+            return rule_table == table_clean
+
+        # Case 2: schema.table in last segment (e.g. conn::db::schema.table or schema.table)
+        if "." in parts[-1]:
+            s_part, t_part = parts[-1].split(".", 1)
+            if schema_clean:
+                return (s_part == schema_clean) and (t_part == table_clean)
+            return t_part == table_clean
+
+        # Case 3: schema-level protection (e.g. conn::db::schema)
+        if len(parts) == 3 and schema_clean:
+            rule_schema = parts[-1]
+            return rule_schema == schema_clean
+
+        # Case 4: single bare name matching table or schema
+        if len(parts) == 1:
+            if "." in parts[0]:
+                s_part, t_part = parts[0].split(".", 1)
+                if schema_clean:
+                    return (s_part == schema_clean) and (t_part == table_clean)
+                return t_part == table_clean
+            return parts[0] == table_clean or (schema_clean and parts[0] == schema_clean)
+
+        # Fallback: check last segment
+        return parts[-1] == table_clean
+
     def allowed_write_ops(self) -> set:
         """Return the set of allowed write operations for this rule."""
         if self.level == ProtectionLevel.FULL:
@@ -101,7 +154,14 @@ class SQLSafetyChecker:
         is_safe, error = checker.check_all(sql)
     """
 
-    def __init__(self, protected_items: list[dict | str]):
+    def __init__(self, protected_items: Optional[list[dict | str]] = None):
+        if protected_items is None:
+            try:
+                from persistence_manager import storage
+                protected_items = storage.get_items("protected_items")
+            except Exception:
+                protected_items = []
+
         self.rules = []
         for item in protected_items:
             if isinstance(item, str):
@@ -163,7 +223,7 @@ class SQLSafetyChecker:
         seen = set()
         for pattern, access_type, write_op in _TABLE_EXTRACT_PATTERNS:
             for match in pattern.finditer(sql):
-                table_ref = match.group(1).lower()
+                table_ref = normalize_table_ref(match.group(1))
                 if table_ref in seen:
                     continue
                 seen.add(table_ref)
@@ -171,25 +231,17 @@ class SQLSafetyChecker:
         return refs
 
     def _find_matching_rule(self, table_ref: str) -> Optional[ProtectionRule]:
-        """Find a protection rule matching a table reference.
-
-        Checks:
-        1. Exact bare_name match (e.g., 'public.salaries')
-        2. Just table name match (e.g., 'salaries' matches rule for 'public.salaries')
-        3. Schema-only match (e.g., 'public' matches all tables in public schema)
-        """
+        """Find a protection rule matching a table reference."""
         table_lower = table_ref.lower()
-        name_only = table_lower.split(".")[-1] if "." in table_lower else table_lower
+        schema_name = None
+        table_name = table_lower
+        if "." in table_lower:
+            schema_name, table_name = table_lower.split(".", 1)
 
         for rule in self.rules:
             if rule.level == ProtectionLevel.NONE:
                 continue
-            # Exact bare_name match
-            if rule.bare_name == table_lower:
-                return rule
-            # Just table name matches (for when SQL doesn't include schema prefix)
-            rule_name = rule.bare_name.split(".")[-1] if "." in rule.bare_name else rule.bare_name
-            if rule_name == name_only:
+            if rule.matches(schema_name, table_name):
                 return rule
         return None
 
@@ -214,9 +266,6 @@ class SQLSafetyChecker:
 
         Returns error or None.
         """
-        # Determine what write operations this SQL performs and on which tables
-        upper = sql.upper()
-
         # Collect (table_ref, write_op) pairs for this SQL
         sql_writes = []
         for table_ref, access_type, write_op in self._extract_table_refs(sql):
@@ -243,21 +292,38 @@ class SQLSafetyChecker:
 
         return None
 
+    def check_table_access(self, schema_name: str, table_name: str, write_op: Optional[str] = "insert") -> tuple[bool, str]:
+        """Check if accessing / writing to a specific table is allowed."""
+        rule = self._find_table_rule(schema_name, table_name)
+        if not rule:
+            return True, ""
+        if rule.level == ProtectionLevel.FULL:
+            return False, f"BLOCKED: '{schema_name}.{table_name}' is fully protected and cannot be accessed."
+        if write_op is not None:
+            allowed = rule.allowed_write_ops()
+            if write_op not in allowed:
+                if not allowed:
+                    return False, f"BLOCKED: '{schema_name}.{table_name}' ({rule.level.value}) does not allow any write operations."
+                allowed_str = ", ".join(sorted(allowed))
+                return False, f"BLOCKED: '{schema_name}.{table_name}' ({rule.level.value}) allows [{allowed_str}] but not '{write_op}'."
+        return True, ""
+
     def check_all(self, sql: str, context: str = "general") -> tuple[bool, str]:
         """Run all safety checks on SQL.
 
         Args:
             sql: The SQL statement to check.
-            context: Origin context for logging ('agent', 'cli', 'general').
+            context: Origin context for logging ('agent', 'cli', 'general', 'query', 'import').
 
         Returns:
             (is_safe, error_message) tuple. If is_safe is True, error_message is empty.
         """
-        # 1. Destructive check (always applies regardless of protection level)
-        err = self.check_destructive(sql)
-        if err:
-            logger.info("Safety block (%s): %s | SQL: %s", context, err, sql[:200])
-            return False, err
+        # 1. Destructive check (always applies for agent / cli context)
+        if context in ("agent", "cli"):
+            err = self.check_destructive(sql)
+            if err:
+                logger.info("Safety block (%s): %s | SQL: %s", context, err, sql[:200])
+                return False, err
 
         # 2. Full protection check
         err = self.check_protected(sql)

@@ -6,6 +6,7 @@ from helpers import validate_identifier
 from models import QueryRequest, TableDataRequest
 from secret_utils import mask_password
 from sql_executor import SqlExecutor
+from sql_safety_checker import SQLSafetyChecker
 
 router = APIRouter()
 
@@ -14,6 +15,11 @@ router = APIRouter()
 async def execute_query(req: QueryRequest):
     try:
         cfg = req.db_config
+        checker = SQLSafetyChecker()
+        is_safe, error = checker.check_all(req.query, context="query")
+        if not is_safe:
+            return {"status": "error", "message": f"Query Blocked: {error}"}
+
         executor = SqlExecutor(cfg)
         result = executor.execute(
             req.query,
@@ -52,6 +58,12 @@ async def get_table_data(req: TableDataRequest):
         schema_name = validate_identifier(req.schema_name, "schema name")
         table_name = validate_identifier(req.table_name, "table name")
         cfg = req.db_config
+
+        checker = SQLSafetyChecker()
+        is_safe, error = checker.check_table_access(schema_name, table_name, write_op=None)
+        if not is_safe:
+            return {"status": "error", "message": f"Table Access Blocked: {error}"}
+
         if cfg.db_type == "postgres":
             query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT :limit OFFSET :offset'
         else:

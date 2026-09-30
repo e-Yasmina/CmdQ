@@ -5,12 +5,15 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from sql_executor import SqlExecutor
 from sql_safety_checker import SQLSafetyChecker
+
+logger = logging.getLogger("cmdq-backend")
 
 from cli_client import (
     get_registered_models, update_registered_models,
@@ -242,10 +245,14 @@ async def ai_prompt(payload: AIPrompt):
 
         # Extract relationships for FK-aware protection filtering if not already done
         if all_relationships is None and payload.get_typed_protection_items():
-            all_relationships = extract_relationships(
-                db_type=cfg.db_type, host=cfg.host, port=cfg.port,
-                user=cfg.user, password=cfg.password, database=cfg.database
-            )
+            try:
+                all_relationships = extract_relationships(
+                    db_type=cfg.db_type, host=cfg.host, port=cfg.port,
+                    user=cfg.user, password=cfg.password, database=cfg.database
+                )
+            except Exception as rel_err:
+                logger.warning(f"Could not extract relationships: {rel_err}")
+                all_relationships = []
 
         prompt_parts = [user_prompt]
         if mentions_context:

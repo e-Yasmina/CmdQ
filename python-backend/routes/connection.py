@@ -11,6 +11,7 @@ from helpers import validate_identifier
 from models import ConnectionDetails, PortCheckDetails, CreateDatabaseRequest, DropDatabaseRequest, DatabaseCopyRequest, EntityGraphRequest
 from persistence_manager import storage
 from secret_utils import mask_password
+from sql_safety_checker import SQLSafetyChecker
 
 logger = logging.getLogger("cmdq-backend")
 
@@ -173,6 +174,13 @@ async def copy_database(req: DatabaseCopyRequest):
             password=req.source_config.password,
             database=src_db
         )
+
+        checker = SQLSafetyChecker()
+        for s_name, tables in schema_dict.items():
+            for t_name in tables:
+                is_safe, error = checker.check_table_access(s_name, t_name, write_op=None)
+                if not is_safe:
+                    return {"status": "error", "message": f"Database Copy Blocked: {error}"}
 
         # 3. Create reusable engines with pool_size=1 to avoid connection exhaustion
         src_pool_kwargs = {"pool_size": 1, "max_overflow": 0}

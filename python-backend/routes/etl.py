@@ -6,6 +6,7 @@ from helpers import validate_identifier
 from models import DataMigrationRequest
 from secret_utils import mask_password
 from sql_executor import SqlExecutor
+from sql_safety_checker import SQLSafetyChecker
 
 router = APIRouter()
 
@@ -18,6 +19,15 @@ async def etl_migrate(req: DataMigrationRequest):
         src_table_name = validate_identifier(req.source_table, "source table name")
         tgt_schema_name = validate_identifier(req.target_schema or "public", "target schema name") if req.target_schema else ""
         tgt_table_name = validate_identifier(req.target_table, "target table name")
+
+        checker = SQLSafetyChecker()
+        is_src_safe, src_err = checker.check_table_access(src_schema_name, src_table_name, write_op=None)
+        if not is_src_safe:
+            return {"status": "error", "message": f"Data Migration Blocked: {src_err}"}
+
+        is_tgt_safe, tgt_err = checker.check_table_access(tgt_schema_name, tgt_table_name, write_op="insert")
+        if not is_tgt_safe:
+            return {"status": "error", "message": f"Data Migration Blocked: {tgt_err}"}
 
         src_schema = src_schema_name if src_schema_name else ("public" if req.source_config.db_type == "postgres" else req.source_schema or "")
         src_tbl = f'"{src_schema}"."{src_table_name}"' if req.source_config.db_type == 'postgres' else f"`{src_schema}`.`{src_table_name}`"

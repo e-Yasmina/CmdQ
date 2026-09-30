@@ -296,6 +296,13 @@ class TestDropDatabase:
         body = resp.json()
         assert body["status"] == "success"
 
+    def test_valid_request_with_server_name(self, db_config, mock_engine):
+        cfg_with_server = {**db_config, "server_name": "production_server"}
+        resp = client.post("/drop_database", json={"db_config": cfg_with_server, "db_name": "old_db"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+
     def test_missing_db_name(self, db_config):
         resp = client.post("/drop_database", json={"db_config": db_config})
         assert resp.status_code == 422
@@ -648,7 +655,11 @@ class TestAiPrompt:
         assert resp.status_code == 200
         _, kwargs = mock_agent.call_args
         assert "protected_items" in kwargs
-        assert "public.salaries" in kwargs["protected_items"]
+        protected_ids = [
+            p.get("id") if isinstance(p, dict) else (p.id if hasattr(p, "id") else p)
+            for p in kwargs["protected_items"]
+        ]
+        assert "public.salaries" in protected_ids
 
     def test_api_path_with_session_context(self, db_config, mock_models, mock_agent):
         """Session context is forwarded to the agent."""
@@ -975,3 +986,102 @@ class TestNotFound:
     def test_unknown_route(self):
         resp = client.get("/nonexistent")
         assert resp.status_code == 404
+
+
+# ===========================================================================
+# Protection Enforcement Integration Tests
+# ===========================================================================
+
+class TestProtectionEnforcement:
+    def test_query_blocked_on_fully_protected_table(self, db_config, mock_engine):
+        rules = [{"id": "conn1::testdb::public::salaries", "level": "full"}]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            resp = client.post("/query", json={
+                "query": "SELECT * FROM salaries",
+                "db_config": db_config
+            })
+            body = resp.json()
+            assert body["status"] == "error"
+            assert "blocked" in body["message"].lower()
+
+    def test_query_blocked_on_readonly_table_for_writes(self, db_config, mock_engine):
+        rules = [{"id": "conn1::testdb::public::employees", "level": "readonly"}]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            for sql in [
+                "INSERT INTO employees (name) VALUES ('Bob')",
+                "UPDATE employees SET name='Bob' WHERE id=1",
+                "DELETE FROM employees WHERE id=1",
+                "TRUNCATE TABLE employees",
+                "DROP TABLE employees",
+                "ALTER TABLE employees ADD COLUMN note text",
+            ]:
+                resp = client.post("/query", json={
+                    "query": sql,
+                    "db_config": db_config
+                })
+                body = resp.json()
+                assert body["status"] == "error", f"Expected error for SQL: {sql}"
+                assert "blocked" in body["message"].lower(), f"Expected blocked message for SQL: {sql}"
+
+    def test_query_allowed_on_readonly_table_for_select(self, db_config, mock_engine):
+        rules = [{"id": "conn1::testdb::public::employees", "level": "readonly"}]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            resp = client.post("/query", json={
+                "query": "SELECT * FROM employees",
+                "db_config": db_config
+            })
+            body = resp.json()
+            assert body["status"] == "success"
+
+    def test_query_custom_permissions(self, db_config, mock_engine):
+        rules = [{
+            "id": "conn1::testdb::public::logs",
+            "level": "custom",
+            "write_permissions": ["insert"]
+        }]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            # INSERT allowed
+            resp = client.post("/query", json={
+                "query": "INSERT INTO logs (msg) VALUES ('test')",
+                "db_config": db_config
+            })
+            assert resp.json()["status"] == "success"
+
+            # DELETE blocked
+            resp = client.post("/query", json={
+                "query": "DELETE FROM logs WHERE id=1",
+                "db_config": db_config
+            })
+            assert resp.json()["status"] == "error"
+            assert "blocked" in resp.json()["message"].lower()
+
+    def test_import_blocked_on_protected_table(self, db_config):
+        rules = [{"id": "conn1::testdb::public::secret_table", "level": "full"}]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            resp = client.post(
+                "/import/table",
+                data={
+                    "db_config": json.dumps(db_config),
+                    "schema_name": "public",
+                    "table_name": "secret_table",
+                    "format": "csv"
+                },
+                files={"file": ("data.csv", b"col1,col2\n1,2", "text/csv")}
+            )
+            body = resp.json()
+            assert body["status"] == "error"
+            assert "blocked" in body["message"].lower()
+
+    def test_etl_blocked_on_protected_target_table(self, db_config):
+        rules = [{"id": "conn1::testdb::public::protected_tgt", "level": "readonly"}]
+        with patch("persistence_manager.storage.get_items", return_value=rules):
+            resp = client.post("/etl/migrate", json={
+                "source_config": db_config,
+                "source_table": "src_table",
+                "target_config": db_config,
+                "target_table": "protected_tgt",
+                "mappings": [{"source_fields": ["col1"], "target_fields": ["col1"]}]
+            })
+            body = resp.json()
+            assert body["status"] == "error"
+            assert "blocked" in body["message"].lower()

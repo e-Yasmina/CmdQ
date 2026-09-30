@@ -11,6 +11,7 @@ class ConnectionDetails(BaseModel):
     user: str
     password: str
     database: str = ""
+    server_name: str = ""
 
     def build_url(self, database=None, driver=None):
         """Build a database connection URL.

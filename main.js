@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const net = require('net');
+const fs = require('fs');
 const { spawn, execSync } = require('child_process');
 
 const BACKEND_PORT = 8000;
@@ -78,14 +79,27 @@ function createWindow() {
   });
 }
 
+function getPythonExecutable() {
+  const isWindows = process.platform === 'win32';
+  const venvPython = isWindows
+    ? path.join(__dirname, 'python-backend', 'venv', 'Scripts', 'python.exe')
+    : path.join(__dirname, 'python-backend', 'venv', 'bin', 'python');
+
+  if (fs.existsSync(venvPython)) {
+    return venvPython;
+  }
+  if (process.env.PYTHON_PATH && fs.existsSync(process.env.PYTHON_PATH)) {
+    return process.env.PYTHON_PATH;
+  }
+  return isWindows ? 'python' : 'python3';
+}
+
 function startBackend() {
   return new Promise((resolve, reject) => {
     console.log("Starting Python backend...");
 
-    const isWindows = process.platform === 'win32';
-    const pythonPath = isWindows
-      ? path.join(__dirname, 'python-backend', 'venv', 'Scripts', 'python.exe')
-      : path.join(__dirname, 'python-backend', 'venv', 'bin', 'python');
+    const pythonPath = getPythonExecutable();
+    console.log(`Using Python executable: ${pythonPath}`);
 
     let settled = false;
     let stderrBuffer = '';
@@ -135,7 +149,7 @@ function startBackend() {
         if (/address already in use/i.test(stderrBuffer)) {
           fail(`Backend port ${BACKEND_PORT} is already in use; if it is not the CmdQ service, free the port and restart.`);
         } else {
-          fail(`Backend exited before it was ready (code=${code}, signal=${signal}). Check the Python venv and that uvicorn is installed.`);
+          fail(`Backend exited before it was ready (code=${code}, signal=${signal}). Check that Python and requirements are installed.`);
         }
       }
     });
@@ -176,6 +190,10 @@ app.whenReady().then(async () => {
       await startBackend();
     } catch (err) {
       console.error(err.message);
+      dialog.showErrorBox(
+        'CmdQ Backend Startup Error',
+        `Failed to start Python backend service:\n\n${err.message}\n\nPlease check Python installation and dependencies.`
+      );
     }
   }
 

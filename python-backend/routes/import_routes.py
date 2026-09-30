@@ -12,6 +12,7 @@ from database import get_db_connection
 from helpers import validate_identifier
 from models import ConnectionDetails
 from secret_utils import mask_password
+from sql_safety_checker import SQLSafetyChecker
 import logging
 
 logger = logging.getLogger("cmdq-backend")
@@ -85,6 +86,12 @@ async def import_table(
     try:
         safe_schema = validate_identifier(schema_name, "schema name")
         safe_table = validate_identifier(table_name, "table name")
+
+        checker = SQLSafetyChecker()
+        is_safe, error = checker.check_table_access(safe_schema, safe_table, write_op="insert")
+        if not is_safe:
+            return {"status": "error", "message": f"Table Import Blocked: {error}"}
+
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
         session = get_db_connection(
@@ -116,7 +123,11 @@ async def import_table(
                 inserted += 1
         elif format == "sql":
             for stmt in content_str.split(';'):
-                if stmt.strip():
+                stmt = stmt.strip()
+                if stmt:
+                    is_safe, error = checker.check_all(stmt, context="import")
+                    if not is_safe:
+                        return {"status": "error", "message": f"Table Import Blocked: {error}"}
                     session.execute(text(stmt))
                     inserted += 1
         else:
@@ -174,6 +185,12 @@ async def import_database(
 
         bootstrap_db = "postgres" if cfg.db_type == "postgres" else ""
         total_executed = 0
+
+        checker = SQLSafetyChecker()
+        for stmt in ddl_statements + dml_statements:
+            is_safe, error = checker.check_all(stmt, context="import")
+            if not is_safe:
+                return {"status": "error", "message": f"Database Import Blocked: {error}"}
 
         if ddl_statements:
             ddl_engine = create_engine(make_url(bootstrap_db), isolation_level="AUTOCOMMIT")
