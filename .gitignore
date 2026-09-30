@@ -59,6 +59,12 @@ venv.bak/
 # === Data simples ===
 sample_dbs/
 
+# === Docs ===
+docs/
+
+# === Tests ===
+tests/
+
 # === Editor directories and files ===
 .agent/
 .vscode/*

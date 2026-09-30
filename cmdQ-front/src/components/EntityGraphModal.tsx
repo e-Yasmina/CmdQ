@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import ReactFlow, {
   Handle,
   Controls,
@@ -1756,6 +1756,33 @@ function TableContextMenu({
   const node = graphData?.nodes?.find((n) => n.id === contextMenu.nodeId);
   if (!node) return null;
 
+  const menuRef = useRef(null);
+  const [coords, setCoords] = useState({ top: contextMenu.y, left: contextMenu.x });
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      const padding = 8;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      let adjustedX = contextMenu.x;
+      let adjustedY = contextMenu.y;
+
+      if (adjustedY + rect.height > viewportHeight - padding) {
+        adjustedY = Math.max(padding, viewportHeight - rect.height - padding);
+      }
+      if (adjustedX + rect.width > viewportWidth - padding) {
+        adjustedX = Math.max(padding, viewportWidth - rect.width - padding);
+      }
+
+      setCoords({
+        top: Math.max(padding, adjustedY),
+        left: Math.max(padding, adjustedX),
+      });
+    }
+  }, [contextMenu.x, contextMenu.y]);
+
   return (
     <>
       <div
@@ -1767,10 +1794,11 @@ function TableContextMenu({
         }}
       />
       <div
-        className="fixed z-[260] w-64 rounded-xl border shadow-2xl overflow-hidden py-1.5 backdrop-blur-md"
+        ref={menuRef}
+        className="fixed z-[260] w-64 rounded-xl border shadow-2xl overflow-hidden py-1.5 backdrop-blur-md max-h-[calc(100vh-16px)] overflow-y-auto"
         style={{
-          top: contextMenu.y,
-          left: contextMenu.x,
+          top: coords.top,
+          left: coords.left,
           backgroundColor: PALETTE.panel,
           borderColor: PALETTE.border,
           boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
