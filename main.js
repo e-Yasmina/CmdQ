@@ -71,7 +71,7 @@ function createWindow() {
     };
     loadWithRetry();
   } else {
-    mainWindow.loadFile(path.join(__dirname, 'cmdQ-front', 'dist', 'index.html'));
+    mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
   }
 
   mainWindow.on('closed', () => {
@@ -82,8 +82,8 @@ function createWindow() {
 function getPythonExecutable() {
   const isWindows = process.platform === 'win32';
   const venvPython = isWindows
-    ? path.join(__dirname, 'python-backend', 'venv', 'Scripts', 'python.exe')
-    : path.join(__dirname, 'python-backend', 'venv', 'bin', 'python');
+    ? path.join(__dirname, 'backend', 'venv', 'Scripts', 'python.exe')
+    : path.join(__dirname, 'backend', 'venv', 'bin', 'python');
 
   if (fs.existsSync(venvPython)) {
     return venvPython;
@@ -112,7 +112,7 @@ function startBackend() {
     };
 
     backendProcess = spawn(pythonPath, ['-u', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
-      cwd: path.join(__dirname, 'python-backend'),
+      cwd: path.join(__dirname, 'backend'),
       env: { ...process.env, PYTHONUNBUFFERED: '1' }
     });
 
@@ -165,7 +165,7 @@ function startBackend() {
 function startFrontend() {
   console.log("Starting Vite dev server...");
   frontendProcess = spawn('npm', ['run', 'dev'], {
-    cwd: path.join(__dirname, 'cmdQ-front'),
+    cwd: path.join(__dirname, 'frontend'),
     shell: true
   });
 

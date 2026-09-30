@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import socket
@@ -377,13 +378,16 @@ async def copy_database(req: DatabaseCopyRequest):
 @router.post("/schema")
 async def get_schema(details: ConnectionDetails):
     try:
-        schema_dict = extract_schema(
+        # Runs a blocking DB session; offloaded so a slow database cannot stall
+        # the event loop and take the whole API down with it.
+        schema_dict = await asyncio.to_thread(
+            extract_schema,
             db_type=details.db_type,
             host=details.host,
             port=details.port,
             user=details.user,
             password=details.password,
-            database=details.database
+            database=details.database,
         )
         return {"status": "success", "schema": schema_dict}
     except Exception as e:

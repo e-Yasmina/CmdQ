@@ -137,11 +137,14 @@ def mock_engine():
 
 
 @pytest.fixture
-def mock_subprocess_gemini():
-    """Mocks _run_subprocess_with_files in the ai route module."""
-    with patch("routes.ai._run_subprocess_with_files") as mock_run:
-        mock_run.return_value = ("Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone.", "")
-        yield mock_run
+def mock_subprocess_cli():
+    """Mocks CLI subprocess execution on both the shim and stdin paths."""
+    canned = ("Here is the SQL:\n```sql\nSELECT * FROM users;\n```\nDone.", "")
+    with patch("routes.ai._run_subprocess_with_files") as mock_shim, \
+         patch("cli_client._run_subprocess_with_files") as mock_stdin:
+        mock_shim.return_value = canned
+        mock_stdin.return_value = canned
+        yield mock_shim
 
 
 @pytest.fixture
@@ -517,7 +520,7 @@ class TestLaunchCli:
         """launch_cli always returns success as it spawns the command."""
         with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_cli", json={
-                "command": "gemini",
+                "command": "ollama",
                 "db_config": db_config
             })
             assert resp.status_code == 200
@@ -533,7 +536,7 @@ class TestLaunchDebug:
     def test_returns_success(self, db_config):
         with patch("routes.ai.subprocess.Popen"):
             resp = client.post("/ai/launch_debug", json={
-                "command": "gemini",
+                "command": "ollama",
                 "db_config": db_config
             })
             assert resp.status_code == 200
@@ -600,7 +603,7 @@ class TestTranslateTable:
         with patch("cli_client._run_subprocess_with_files") as mock_run:
             mock_run.return_value = ('[{"id": 1, "name": "Alice"}]', "")
             resp = client.post("/ai/translate_table", json={
-                "command": "gemini",
+                "command": "ollama",
                 "table_data": [{"id": 1, "name": "Alice"}]
             })
             body = resp.json()
@@ -686,10 +689,10 @@ class TestAiPrompt:
         assert isinstance(kwargs["system_prompt"], str)
         assert len(kwargs["system_prompt"]) > 0
 
-    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
+    def test_cli_path_response_shape(self, db_config, mock_no_models, mock_subprocess_cli, mock_which, mock_engine):
         """CLI path: returns the same response shape as API path."""
         resp = client.post("/ai/prompt", json={
-            "command": "gemini",
+            "command": "ollama",
             "prompt": "Show all users",
             "db_config": db_config
         })
@@ -702,10 +705,10 @@ class TestAiPrompt:
         assert body["extracted_sql"] == "SELECT * FROM users;"
         assert isinstance(body["data"], list)
 
-    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
+    def test_cli_path_sql_execution(self, db_config, mock_no_models, mock_subprocess_cli, mock_which, mock_engine):
         """CLI path: extracted SQL is executed against the database."""
         resp = client.post("/ai/prompt", json={
-            "command": "gemini",
+            "command": "ollama",
             "prompt": "Show all users",
             "db_config": db_config
         })
@@ -717,7 +720,7 @@ class TestAiPrompt:
         with patch("cli_client._run_subprocess_with_files") as mock_run:
             mock_run.return_value = ("Just a plain text response with no SQL.", "")
             resp = client.post("/ai/prompt", json={
-                "command": "some-cli", "prompt": "Hello", "db_config": db_config
+                "command": "ollama", "prompt": "Hello", "db_config": db_config
             })
             body = resp.json()
             assert body["status"] == "success"
@@ -729,7 +732,7 @@ class TestAiPrompt:
         with patch("cli_client._run_subprocess_with_files") as mock_run:
             mock_run.return_value = ("```sql\nDROP TABLE users;\n```", "")
             resp = client.post("/ai/prompt", json={
-                "command": "some-cli", "prompt": "Drop users table", "db_config": db_config
+                "command": "ollama", "prompt": "Drop users table", "db_config": db_config
             })
             body = resp.json()
             assert body["status"] == "success"
@@ -740,7 +743,7 @@ class TestAiPrompt:
         with patch("cli_client._run_subprocess_with_files") as mock_run:
             mock_run.return_value = ("```sql\nDELETE FROM users;\n```", "")
             resp = client.post("/ai/prompt", json={
-                "command": "some-cli", "prompt": "Delete all", "db_config": db_config
+                "command": "ollama", "prompt": "Delete all", "db_config": db_config
             })
             body = resp.json()
             assert "BLOCKED BY SAFETY SYSTEM" in body["data"][0]["error"]
@@ -751,7 +754,7 @@ class TestAiPrompt:
             import subprocess
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=300)
             resp = client.post("/ai/prompt", json={
-                "command": "some-cli", "prompt": "Do something slow", "db_config": db_config
+                "command": "ollama", "prompt": "Do something slow", "db_config": db_config
             })
             body = resp.json()
             assert body["status"] == "success"
@@ -770,10 +773,10 @@ class TestAiPrompt:
         })
         assert resp.status_code == 200
 
-    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess_gemini, mock_which, mock_engine):
+    def test_with_attached_file(self, db_config, mock_no_models, mock_subprocess_cli, mock_which, mock_engine):
         """Attached file metadata is accepted."""
         resp = client.post("/ai/prompt", json={
-            "command": "gemini",
+            "command": "ollama",
             "prompt": "Analyze this file",
             "db_config": db_config,
             "attached_file": {"name": "data.csv", "content": "a,b\n1,2"}
@@ -781,7 +784,7 @@ class TestAiPrompt:
         assert resp.status_code == 200
 
     def test_missing_prompt(self, db_config):
-        resp = client.post("/ai/prompt", json={"command": "gemini", "db_config": db_config})
+        resp = client.post("/ai/prompt", json={"command": "ollama", "db_config": db_config})
         assert resp.status_code == 422
 
     def test_missing_command(self, db_config):
@@ -789,7 +792,7 @@ class TestAiPrompt:
         assert resp.status_code == 422
 
     def test_missing_db_config(self):
-        resp = client.post("/ai/prompt", json={"command": "gemini", "prompt": "Hello"})
+        resp = client.post("/ai/prompt", json={"command": "ollama", "prompt": "Hello"})
         assert resp.status_code == 422
 
 
