@@ -69,7 +69,7 @@ export default function MainHeader({
                   type="text"
                   value={customCliCommand}
                   onChange={(e) => setCustomCliCommand(e.target.value)}
-                  placeholder="e.g. 'gemini'"
+                  placeholder="e.g. 'ollama'"
                   className="bg-background border border-border rounded p-1 text-xs text-textPrimary focus:outline-none focus:border-primary w-32"
                 />
               )}

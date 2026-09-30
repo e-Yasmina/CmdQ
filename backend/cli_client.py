@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import shutil
 import json
@@ -10,7 +11,10 @@ import portalocker
 
 MODELS_FILE = "registered_models.json"
 
-from cli_constants import ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND, CLI_ERR_PATH_NOT_FOUND
+from cli_constants import (
+    ALLOWED_CLI_COMMANDS, CLI_PROMPT_FLAGS, CLI_ERR_NOT_ALLOWED,
+    CLI_ERR_NOT_FOUND, CLI_ERR_PATH_NOT_FOUND,
+)
 from secret_utils import encrypt_api_key, decrypt_api_key
 
 
@@ -116,6 +120,46 @@ def resolve_llm_target(cmd_or_model_id):
         return ("api", selected_api_model)
     cmd = resolve_and_validate_command(cmd_or_model_id)
     return ("cli", cmd)
+
+
+def resolve_npm_cli_invocation(cmd):
+    """Resolve a Windows npm .cmd/.bat shim into a runnable node command.
+
+    npm installs global CLIs as batch shims that cannot be exec'd directly with
+    an argv payload, so we locate the node_modules entrypoint the shim delegates
+    to and invoke it with node instead.
+
+    Returns an argv prefix (everything before the prompt), or None if cmd is not
+    a recognised npm shim -- callers should then fall back to the stdin path.
+    """
+    if not cmd or not cmd.lower().endswith((".cmd", ".bat")):
+        return None
+    name = os.path.basename(cmd).lower()
+    for ext in (".cmd", ".bat"):
+        if name.endswith(ext):
+            name = name[: -len(ext)]
+            break
+    if name not in CLI_PROMPT_FLAGS:
+        return None
+    try:
+        with open(cmd, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except OSError:
+        return None
+    match = re.search(r'["\']?([^"\'\r\n]+[\\/]node_modules[\\/][^"\'\r\n]+\.js)["\']?', content)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    cmd_dir = os.path.dirname(os.path.abspath(cmd))
+    # cmd.exe expands %~dp0 with a trailing separator but %dp0 / %dp0% without
+    # one, so each variable expands to a different value. Longer tokens are
+    # tried first: "%dp0%" has to be consumed before the "%dp0" inside it.
+    for token, expansion in (("%dp0%", cmd_dir), ("%~dp0", cmd_dir + os.sep), ("%dp0", cmd_dir)):
+        raw = raw.replace(token, expansion)
+    script = os.path.normpath(raw)
+    if not os.path.exists(script):
+        return None
+    return ["node", script, *CLI_PROMPT_FLAGS[name]]
 
 
 def _run_subprocess_with_files(cmd, input_str, timeout=300, env=None):

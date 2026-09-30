@@ -14,7 +14,8 @@ from sql_safety_checker import SQLSafetyChecker
 
 from cli_client import (
     get_registered_models, update_registered_models,
-    invoke_llm_simple, invoke_llm_structured, resolve_llm_target, _run_subprocess_with_files,
+    invoke_llm_simple, invoke_llm_structured, resolve_llm_target,
+    resolve_npm_cli_invocation, _run_subprocess_with_files,
 )
 from cli_constants import (
     ALLOWED_CLI_COMMANDS, CLI_ERR_NOT_ALLOWED, CLI_ERR_NOT_FOUND,
@@ -348,30 +349,12 @@ async def ai_prompt(payload: AIPrompt):
             print(f"[CmdQ] Output length: {len(output)} chars")
         else:
             try:
-                cmd_lower = cmd_to_run.lower()
-                if "gemini" in cmd_lower:
-                    node_script = None
-                    if cmd_to_run.lower().endswith((".cmd", ".bat")):
-                        try:
-                            with open(cmd_to_run, "r") as f:
-                                cmd_content = f.read()
-                            import re as re_mod
-                            match = re_mod.search(r'["\']?([^"\']+[\\\/]node_modules[\\\/][^"\']+\.js)["\']?', cmd_content)
-                            if match:
-                                raw = match.group(1)
-                                cmd_dir = os.path.dirname(cmd_to_run)
-                                node_script = raw.replace("%dp0%", cmd_dir).replace("%~dp0", cmd_dir).replace("%dp0", cmd_dir)
-                                node_script = os.path.normpath(node_script)
-                        except:
-                            pass
-
-                    if node_script and os.path.exists(node_script):
-                        run_cmd = ["node", node_script, "-p", base_prompt]
-                    else:
-                        run_cmd = [cmd_to_run, "-p", base_prompt[:7000]]
-
-                    gemini_stdout, _ = _run_subprocess_with_files(run_cmd, "", timeout=300, env=env)
-                    output = gemini_stdout.strip()
+                npm_argv = resolve_npm_cli_invocation(cmd_to_run)
+                if npm_argv:
+                    stdout, _ = _run_subprocess_with_files(
+                        [*npm_argv, base_prompt[:7000]], "", timeout=300, env=env
+                    )
+                    output = stdout.strip()
                 else:
                     output = invoke_llm_simple(cmd_to_run, base_prompt, timeout=300, env=env)
 
