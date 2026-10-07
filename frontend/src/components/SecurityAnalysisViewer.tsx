@@ -5,7 +5,17 @@ import ReactMarkdown from 'react-markdown';
 import { PALETTE } from '../theme/palette';
 import { CopyIcon } from './icons/CopyIcon';
 
-function SecurityCard({ title, value, icon, description, riskText, riskLevel, children }) {
+interface SecurityCardProps {
+    title: string;
+    value?: any;
+    icon: string;
+    description?: string;
+    riskText?: string;
+    riskLevel?: string;
+    children?: React.ReactNode;
+}
+
+function SecurityCard({ title, value, icon, description, riskText, riskLevel, children }: SecurityCardProps) {
     const riskColor = riskLevel === 'high' ? 'text-rose-500'
         : riskLevel === 'medium' ? 'text-amber-500'
             : riskLevel === 'low' ? 'text-emerald-500'

@@ -9,8 +9,9 @@ export default function SaveFileDialog({ content, defaultFilename, onClose }) {
 
   const handleBrowse = async () => {
     try {
-      if (typeof window.showDirectoryPicker === 'function') {
-        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const win = window as any;
+      if (typeof win.showDirectoryPicker === 'function') {
+        const dirHandle = await win.showDirectoryPicker({ mode: 'readwrite' });
         if (dirHandle?.name) {
           setStatus(`Selected: ${dirHandle.name}`);
         }

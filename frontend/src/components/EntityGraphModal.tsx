@@ -1078,8 +1078,10 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
   const handleExportPng = useCallback(async () => {
     if (!rfInstance) return;
     try {
-      const { toPng } = await import('reactflow');
-      const dataUrl = await toPng(document.querySelector('.react-flow'), {
+      const { toPng } = await import('html-to-image');
+      const el = document.querySelector('.react-flow') as HTMLElement | null;
+      if (!el) return;
+      const dataUrl = await toPng(el, {
         backgroundColor: PALETTE.background,
         quality: 1,
       });
@@ -1521,7 +1523,7 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
                     >
                       <option value="">All Schemas</option>
                       {uniqueSchemas.map((s) => (
-                        <option key={s} value={s}>{s}</option>
+                        <option key={String(s)} value={String(s)}>{String(s)}</option>
                       ))}
                     </select>
                   </div>
@@ -1657,9 +1659,7 @@ export default function EntityGraphModal({ activeConfig, targetDatabase, targetS
             style={{ backgroundColor: PALETTE.background }}
           >
             <Controls
-              style={{
-                button: { backgroundColor: PALETTE.panel, borderColor: PALETTE.border, color: PALETTE.textPrimary },
-              }}
+              style={{ backgroundColor: PALETTE.panel, borderColor: PALETTE.border }}
             />
             <MiniMap
               nodeColor={PALETTE.primary + '40'}

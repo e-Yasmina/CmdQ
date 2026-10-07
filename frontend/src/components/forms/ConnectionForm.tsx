@@ -79,7 +79,7 @@ export default function ConnectionForm({ onConnected, onCancel, existingConnecti
         setIsLoading(true);
         setErrorMsg("");
         try {
-            await apiService.checkPort(dbConfig.host, parseInt(dbConfig.port));
+            await apiService.checkPort(dbConfig.host, parseInt(String(dbConfig.port), 10));
             setConnStep(2);
         } catch (err) {
             console.error("Port check failed:", err.message);
@@ -104,7 +104,7 @@ export default function ConnectionForm({ onConnected, onCancel, existingConnecti
         setIsLoading(true);
         setErrorMsg("");
         try {
-            const payload = { ...dbConfig, port: parseInt(dbConfig.port), database: "" };
+            const payload = { ...dbConfig, port: parseInt(String(dbConfig.port), 10), database: "" };
             const data = await apiService.connectDb(payload);
 
             const retrievedDbs = data.databases || [];

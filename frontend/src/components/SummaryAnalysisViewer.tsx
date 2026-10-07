@@ -4,7 +4,16 @@ import ReactMarkdown from 'react-markdown';
 import { PALETTE } from '../theme/palette';
 import { CopyIcon } from './icons/CopyIcon';
 
-function MetricCard({ title, value, icon, description, status, children }) {
+interface MetricCardProps {
+    title: string;
+    value?: any;
+    icon: string;
+    description?: string;
+    status?: string;
+    children?: React.ReactNode;
+}
+
+function MetricCard({ title, value, icon, description, status, children }: MetricCardProps) {
     const statusColor = status === 'danger' ? 'text-rose-500'
         : status === 'warning' ? 'text-amber-500'
             : status === 'success' ? 'text-emerald-500'
@@ -34,6 +43,15 @@ function formatBytes(bytes, decimals = 2) {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
+interface SummaryAnalysisViewerProps {
+    result: any;
+    onConsultAi?: any;
+    isAiLoading?: boolean;
+    aiError?: string;
+    onRefreshMetrics?: any;
+    isMetricsLoading?: boolean;
+}
+
 export default function SummaryAnalysisViewer({
     result,
     onConsultAi,
@@ -41,7 +59,7 @@ export default function SummaryAnalysisViewer({
     aiError = "",
     onRefreshMetrics,
     isMetricsLoading = false,
-}) {
+}: SummaryAnalysisViewerProps) {
     const [copied, setCopied] = useState(false);
 
     if (!result || !result.metrics) {

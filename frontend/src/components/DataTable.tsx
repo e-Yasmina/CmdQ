@@ -313,7 +313,7 @@ export default function DataTable({ result, activeConfig, activeSchemaName, acti
                         if (e.key === 'Enter') e.currentTarget.blur();
                         if (e.key === 'Escape') {
                             setEditingCell({ ...editingCell, value: val === null ? "" : String(val) });
-                            setTimeout(() => e.target.blur(), 0);
+                            setTimeout(() => (e.target as HTMLElement)?.blur?.(), 0);
                         }
                     }}
                     onBlur={() => handleUpdate(i, row, k, editingCell.value, val)}

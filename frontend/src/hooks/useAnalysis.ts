@@ -40,11 +40,19 @@ export function useAnalysis() {
     return tables;
   }, []);
 
+  interface ManualQueryOptions {
+    setActiveSchemaName?: (name: string) => void;
+    setActiveTableName?: (name: string) => void;
+    setSelectedTable?: (tables: string[]) => void;
+    activeSchema?: any;
+    activeSchemaName?: string;
+  }
+
   const executeManualQuery = useCallback(async (
-    queryText,
-    activeConfig,
-    sessionContext,
-    { setActiveSchemaName, setActiveTableName, setSelectedTable, activeSchema, activeSchemaName } = {}
+    queryText: string,
+    activeConfig: any,
+    sessionContext: any,
+    { setActiveSchemaName, setActiveTableName, setSelectedTable, activeSchema, activeSchemaName }: ManualQueryOptions = {}
   ) => {
     if (!activeConfig || !queryText.trim()) return;
     setSqlResult({ loading: true });

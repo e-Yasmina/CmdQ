@@ -55,7 +55,12 @@ export function parseCliSteps(text) {
   return steps;
 }
 
-export default function AiMessageRenderer({ content, onExecuteSql }) {
+interface AiMessageRendererProps {
+  content: string;
+  onExecuteSql?: (sql: string) => void;
+}
+
+export default function AiMessageRenderer({ content, onExecuteSql }: AiMessageRendererProps) {
   const [saveDialog, setSaveDialog] = useState(null);
   const [copiedKey, setCopiedKey] = useState(null);
 

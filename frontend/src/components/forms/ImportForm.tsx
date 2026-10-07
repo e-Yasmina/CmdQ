@@ -1,13 +1,23 @@
-import { useState, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { apiService } from '../../services/apiService';
 
-export default function ImportForm({ isDatabase, targetName, activeConfig, schemaName, tableName, onCancel, onSuccess }) {
+interface ImportFormProps {
+    isDatabase: boolean;
+    targetName: string;
+    activeConfig: any;
+    schemaName?: string;
+    tableName?: string;
+    onCancel: () => void;
+    onSuccess?: () => void;
+}
+
+export default function ImportForm({ isDatabase, targetName, activeConfig, schemaName, tableName, onCancel, onSuccess }: ImportFormProps) {
     const [format, setFormat] = useState(isDatabase ? 'sql' : 'csv');
-    const [selectedFile, setSelectedFile] = useState(null);
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [scanResult, setScanResult] = useState(null);
+    const [scanResult, setScanResult] = useState<any>(null);
     const [targetDatabase, setTargetDatabase] = useState(activeConfig?.database || "");
-    const fileInputRef = useRef();
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleScan = async () => {
         if (!selectedFile) return;
@@ -105,7 +115,7 @@ export default function ImportForm({ isDatabase, targetName, activeConfig, schem
                         type="file"
                         ref={fileInputRef}
                         accept={format === 'csv' ? '.csv' : format === 'json' ? '.json' : '.sql'}
-                        onChange={(e) => setSelectedFile(e.target.files[0])}
+                        onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
                         className="bg-background border border-border text-textPrimary rounded p-2 focus:border-primary outline-none text-sm cursor-pointer"
                     />
                 </div>

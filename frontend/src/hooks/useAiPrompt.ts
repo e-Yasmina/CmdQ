@@ -74,7 +74,14 @@ export function useAiPrompt() {
     setShowTableMention(false);
   }, [extractTableMentions]);
 
-  const handlePromptKeyDown = useCallback((e, { onEnter, filteredTableMentions, activeMentionIndex, setActiveMentionIndex } = {}) => {
+  interface PromptKeyDownOptions {
+    onEnter?: () => void;
+    filteredTableMentions?: string[];
+    activeMentionIndex?: number;
+    setActiveMentionIndex?: React.Dispatch<React.SetStateAction<number>>;
+  }
+
+  const handlePromptKeyDown = useCallback((e: React.KeyboardEvent, { onEnter, filteredTableMentions, activeMentionIndex = -1, setActiveMentionIndex }: PromptKeyDownOptions = {}) => {
     // If table mentions popup is active
     if (showTableMention && filteredTableMentions && filteredTableMentions.length > 0) {
       if (e.key === 'ArrowDown') {

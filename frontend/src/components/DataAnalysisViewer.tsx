@@ -5,7 +5,16 @@ import ReactMarkdown from 'react-markdown';
 import { PALETTE } from '../theme/palette';
 import { CopyIcon } from './icons/CopyIcon';
 
-function MetricCard({ title, value, icon, description, status, children }) {
+interface MetricCardProps {
+    title: string;
+    value?: any;
+    icon: string;
+    description?: string;
+    status?: string;
+    children?: React.ReactNode;
+}
+
+function MetricCard({ title, value, icon, description, status, children }: MetricCardProps) {
     const statusColor = status === 'danger' ? 'text-rose-500'
         : status === 'warning' ? 'text-amber-500'
             : status === 'success' ? 'text-emerald-500'

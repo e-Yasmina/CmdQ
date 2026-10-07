@@ -53,7 +53,7 @@ const ShortcutsModal = ({ isOpen, onClose, shortcuts, onSave }) => {
       className="fixed inset-0 z-[110] flex items-center justify-center bg-background/80 backdrop-blur-md p-4 outline-none" 
       onKeyDown={handleKeyDown} 
       onClick={onClose}
-      tabIndex="0"
+      tabIndex={0}
     >
       <div 
         className="w-full max-w-md bg-panel border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col"
@@ -78,7 +78,7 @@ const ShortcutsModal = ({ isOpen, onClose, shortcuts, onSave }) => {
                     onClick={() => handleRecord(id)}
                     className="bg-background border border-border px-2 py-1 rounded text-[10px] font-sans text-gray-500 hover:border-primary hover:text-primary transition-all cursor-pointer"
                   >
-                    {combo}
+                    {String(combo)}
                   </button>
                 )}
               </div>

@@ -59,7 +59,7 @@ export function useConnection() {
     return list.sort();
   }, [activeSchema]);
 
-  const loadProtectedItems = useCallback(async (connectionId) => {
+  const loadProtectedItems = useCallback(async (connectionId?: string) => {
     try {
       const data = await apiService.fetchProtectionRules(connectionId);
       if (data.status === "success" && data.rules) {
