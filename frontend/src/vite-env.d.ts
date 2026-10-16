@@ -31,3 +31,8 @@ declare module 'html-to-image' {
   export function toBlob(node: HTMLElement, options?: any): Promise<Blob>;
   export function toSvg(node: HTMLElement, options?: any): Promise<string>;
 }
+
+interface Window {
+  electronAPI?: any;
+}
+

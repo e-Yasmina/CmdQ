@@ -15,10 +15,12 @@ from routes.storage import router as storage_router
 from routes.protection import router as protection_router
 
 
+import sys
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler(sys.stderr)]
 )
 logger = logging.getLogger("cmdq-backend")
 
@@ -29,8 +31,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        # "http://localhost:3000",
     ],
-    allow_origin_regex=r"^(https?://.*|file://.*|vscode-webview://.*|null)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
