@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="frontend/src/assets/icons/database.png" alt="CmdQ Logo" width="80" />
+<!-- <img src="frontend/src/assets/icons/database.png" alt="CmdQ Logo" width="80" /> -->
 
 ### Intelligent Database Administration & Schema Exploration Desktop Workstation
 
