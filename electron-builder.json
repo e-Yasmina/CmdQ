@@ -1,0 +1,21 @@
+{
+  "appId": "com.cmdq.desktop",
+  "productName": "CmdQ",
+  "directories": {
+    "output": "dist-electron"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "frontend/dist/**/*",
+    "backend/**/*",
+    "!backend/**/__pycache__/**/*",
+    "!backend/**/.pytest_cache/**/*",
+    "!backend/venv/**/*",
+    "!**/*.ts",
+    "!**/*.tsx"
+  ],
+  "win": {
+    "target": ["nsis", "portable"]
+  }
+}

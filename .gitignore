@@ -6,6 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+ai_response*.txt
 
 node_modules/
 dist/
@@ -27,7 +28,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-test_*.py
 diag_*.py
 probe_*.py
 env/
@@ -58,6 +58,12 @@ venv.bak/
 
 # === Data simples ===
 sample_dbs/
+
+# === Docs ===
+docs/
+
+# === Tests ===
+tests/
 
 # === Editor directories and files ===
 .agent/
