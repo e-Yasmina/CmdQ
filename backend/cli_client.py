@@ -25,20 +25,20 @@ def _is_encrypted(value: str) -> bool:
 def get_registered_models():
     if os.path.exists(MODELS_FILE):
         try:
-            with portalocker.Lock(MODELS_FILE, mode='r', encoding='utf-8',
-                                 flags=portalocker.LOCK_SH | portalocker.LOCK_NB,
-                                 timeout=5) as f:
-                models = json.load(f)
+            try:
+                with portalocker.Lock(MODELS_FILE, mode='r', encoding='utf-8', timeout=5) as f:
+                    models = json.load(f)
+            except portalocker.LockException:
+                with open(MODELS_FILE, 'r', encoding='utf-8') as f:
+                    models = json.load(f)
             for m in models:
                 raw = m.get("api_key", "")
                 if raw and _is_encrypted(raw):
                     m["api_key"] = decrypt_api_key(raw)
             return models
-        except portalocker.LockException:
-            logging.error("Could not acquire shared lock on registered_models.json")
+        except Exception as e:
+            logging.error(f"Error reading registered models: {e}")
             return []
-        except Exception:
-            pass
     return []
 
 

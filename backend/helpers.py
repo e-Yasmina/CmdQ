@@ -24,6 +24,169 @@ def validate_identifier(name: str, label: str = "identifier"):
     return name
 
 
+def split_sql_statements(sql: str) -> list[str]:
+    """Split a SQL dump into individual executable statements in linear O(N) time.
+
+    Correctly handles:
+    - Single quotes ('...') including escaped quotes ('' and \\')
+    - Double quotes ("...")
+    - Backticks (`...`)
+    - Single-line comments (-- and #)
+    - Multi-line comments (/* ... */)
+    - PostgreSQL dollar-quoted blocks ($$ ... $$ and $tag$ ... $tag$)
+    """
+    statements = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    in_backtick = False
+    in_line_comment = False
+    in_block_comment = False
+    in_dollar_quote = False
+    dollar_tag = ""
+    i = 0
+    n = len(sql)
+
+    while i < n:
+        c = sql[i]
+        c2 = sql[i:i+2]
+
+        if in_line_comment:
+            if c == '\n':
+                in_line_comment = False
+            current.append(c)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if c2 == '*/':
+                in_block_comment = False
+                current.append('*/')
+                i += 2
+                continue
+            current.append(c)
+            i += 1
+            continue
+
+        if in_single_quote:
+            current.append(c)
+            if c == '\\' and i + 1 < n:
+                current.append(sql[i+1])
+                i += 2
+                continue
+            if c == "'":
+                if i + 1 < n and sql[i+1] == "'":
+                    current.append(sql[i+1])
+                    i += 2
+                    continue
+                in_single_quote = False
+            i += 1
+            continue
+
+        if in_double_quote:
+            current.append(c)
+            if c == '\\' and i + 1 < n:
+                current.append(sql[i+1])
+                i += 2
+                continue
+            if c == '"':
+                in_double_quote = False
+            i += 1
+            continue
+
+        if in_backtick:
+            current.append(c)
+            if c == '`':
+                in_backtick = False
+            i += 1
+            continue
+
+        if in_dollar_quote:
+            current.append(c)
+            if c == '$' and dollar_tag and sql[i-len(dollar_tag)+1:i+1] == dollar_tag:
+                in_dollar_quote = False
+                dollar_tag = ""
+            i += 1
+            continue
+
+        # Comments
+        if c2 == '--' or c == '#':
+            in_line_comment = True
+            current.append(c)
+            i += 1
+            continue
+        if c2 == '/*':
+            in_block_comment = True
+            current.append('/*')
+            i += 2
+            continue
+
+        # Quotes
+        if c == "'":
+            in_single_quote = True
+            current.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double_quote = True
+            current.append(c)
+            i += 1
+            continue
+        if c == '`':
+            in_backtick = True
+            current.append(c)
+            i += 1
+            continue
+
+        # PostgreSQL dollar quotes ($tag$...$tag$ or $$...$$)
+        if c == '$':
+            m = re.match(r'^\$[a-zA-Z0-9_]*\$', sql[i:])
+            if m:
+                tag = m.group(0)
+                in_dollar_quote = True
+                dollar_tag = tag
+                current.append(tag)
+                i += len(tag)
+                continue
+
+        # Statement delimiter
+        if c == ';':
+            stmt = ''.join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+
+        current.append(c)
+        i += 1
+
+    last_stmt = ''.join(current).strip()
+    if last_stmt:
+        statements.append(last_stmt)
+
+    return statements
+
+
+def strip_leading_comments(stmt: str) -> str:
+    """Remove leading whitespace and comments (-- or /* */ or #) to reveal the SQL verb."""
+    s = stmt.lstrip()
+    while True:
+        if s.startswith("--") or s.startswith("#"):
+            nl = s.find("\n")
+            if nl == -1:
+                return ""
+            s = s[nl+1:].lstrip()
+        elif s.startswith("/*"):
+            end = s.find("*/")
+            if end == -1:
+                return ""
+            s = s[end+2:].lstrip()
+        else:
+            break
+    return s
+
+
 def _upsert_model(models, payload):
     for existing in models:
         if existing["id"] == payload["id"]:

@@ -1,6 +1,8 @@
+import asyncio
 import csv
 import io
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -9,24 +11,18 @@ from fastapi import APIRouter, UploadFile, File, Form
 from sqlalchemy import text, create_engine
 
 from database import get_db_connection
-from helpers import validate_identifier
+from helpers import validate_identifier, split_sql_statements, strip_leading_comments
 from models import ConnectionDetails
 from secret_utils import mask_password
 from sql_safety_checker import SQLSafetyChecker
-import logging
 
 logger = logging.getLogger("cmdq-backend")
 
 router = APIRouter()
 
 
-@router.post("/import/scan")
-async def import_scan(
-    file: UploadFile = File(...),
-    format: str = Form(...)
-):
+def _do_import_scan(content: bytes, format: str) -> dict:
     try:
-        content = await file.read()
         content_str = content.decode("utf-8")
         report = {
             "format": format,
@@ -49,22 +45,23 @@ async def import_scan(
             else:
                 report["destructive_actions"].append("JSON root is not an array. Import might fail.")
         elif format == "sql":
-            stmts = [s.strip() for s in content_str.split(';') if s.strip()]
+            stmts = split_sql_statements(content_str)
             report["estimated_operations"] = len(stmts)
             for s in stmts:
-                s_upper = s.upper()
+                clean_s = strip_leading_comments(s)
+                s_upper = clean_s.upper()
                 if s_upper.startswith("DROP"):
-                    report["destructive_actions"].append(f"Destructive: {s[:100]}...")
+                    report["destructive_actions"].append(f"Destructive: {clean_s[:100]}...")
                 if "CREATE TABLE" in s_upper:
                     report["table_count"] += 1
-                    match = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s\(\)]+)", s, re.IGNORECASE)
+                    match = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s\(\)]+)", clean_s, re.IGNORECASE)
                     if match:
                         name = match.group(1).replace('"', '').replace('`', '').split('.')[-1]
                         if name not in report["tables_affected"]:
                             report["tables_affected"].append(name)
                 if "INSERT INTO" in s_upper:
                     report["row_count"] += 1
-                    match = re.search(r"INSERT\s+INTO\s+([^\s\(\)]+)", s, re.IGNORECASE)
+                    match = re.search(r"INSERT\s+INTO\s+([^\s\(\)]+)", clean_s, re.IGNORECASE)
                     if match:
                         name = match.group(1).replace('"', '').replace('`', '').split('.')[-1]
                         if name not in report["tables_affected"]:
@@ -74,14 +71,16 @@ async def import_scan(
         return {"status": "error", "message": f"Scan failed: {mask_password(str(e))}"}
 
 
-@router.post("/import/table")
-async def import_table(
+@router.post("/import/scan")
+async def import_scan(
     file: UploadFile = File(...),
-    db_config: str = Form(...),
-    schema_name: str = Form(...),
-    table_name: str = Form(...),
     format: str = Form(...)
 ):
+    content = await file.read()
+    return await asyncio.to_thread(_do_import_scan, content, format)
+
+
+def _do_import_table(content: bytes, db_config: str, schema_name: str, table_name: str, format: str) -> dict:
     session = None
     try:
         safe_schema = validate_identifier(schema_name, "schema name")
@@ -98,7 +97,6 @@ async def import_table(
             db_type=cfg.db_type, host=cfg.host, port=cfg.port,
             user=cfg.user, password=cfg.password, dbname=cfg.database
         )
-        content = await file.read()
         content_str = content.decode("utf-8")
         inserted = 0
         if format == "csv":
@@ -122,57 +120,87 @@ async def import_table(
                 session.execute(text(q), dict(row))
                 inserted += 1
         elif format == "sql":
-            for stmt in content_str.split(';'):
-                stmt = stmt.strip()
+            stmts = split_sql_statements(content_str)
+            for stmt in stmts:
                 if stmt:
                     is_safe, error = checker.check_all(stmt, context="import")
                     if not is_safe:
                         return {"status": "error", "message": f"Table Import Blocked: {error}"}
-                    session.execute(text(stmt))
+                    try:
+                        session.exec_driver_sql(stmt)
+                    except Exception:
+                        session.execute(text(stmt))
                     inserted += 1
         else:
-             raise Exception("Unsupported format")
+            raise Exception("Unsupported format")
+
         session.commit()
         session.close()
         session = None
         return {"status": "success", "message": f"Successfully imported data. Processed {inserted} items."}
     except Exception as e:
         if session:
-            session.rollback()
-            session.close()
+            try:
+                session.rollback()
+                session.close()
+            except Exception:
+                pass
         return {"status": "error", "message": f"Table Import Failed: {mask_password(str(e))}"}
 
 
-@router.post("/import/database")
-async def import_database(
+@router.post("/import/table")
+async def import_table(
     file: UploadFile = File(...),
     db_config: str = Form(...),
-    target_database: str = Form("")
+    schema_name: str = Form(...),
+    table_name: str = Form(...),
+    format: str = Form(...)
 ):
+    content = await file.read()
+    return await asyncio.to_thread(_do_import_table, content, db_config, schema_name, table_name, format)
+
+
+def _do_import_database(content: bytes, db_config: str, target_database: str) -> dict:
     try:
         cfg_dict = json.loads(db_config)
         cfg = ConnectionDetails(**cfg_dict)
-        content = await file.read()
         content_str = content.decode("utf-8")
 
         create_db_match = re.search(r'CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re.IGNORECASE)
         drop_db_match = re.search(r'DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?([`"]?)([a-zA-Z0-9_]+)\1', content_str, re.IGNORECASE)
-        dump_db_name = create_db_match.group(2) if create_db_match else (drop_db_match.group(2) if drop_db_match else "")
+        use_db_match = re.search(r'\bUSE\s+([`"]?)([a-zA-Z0-9_]+)\1', content_str, re.IGNORECASE)
+        dump_db_name = (
+            create_db_match.group(2) if create_db_match
+            else (drop_db_match.group(2) if drop_db_match
+            else (use_db_match.group(2) if use_db_match else ""))
+        )
 
         target_db = target_database or dump_db_name or cfg.database
         if not target_db:
-            return {"status": "error", "message": "No target database specified. Provide a database name or include CREATE DATABASE in your SQL dump."}
+            return {
+                "status": "error",
+                "message": "No target database specified. Provide a database name or include CREATE DATABASE in your SQL dump."
+            }
 
-        raw_statements = re.split(r';(?=(?:[^\']*\'[^\']*\')*[^\']*$)', content_str)
+        # Linear O(N) SQL statement parser (never hangs with catastrophic backtracking)
+        raw_statements = split_sql_statements(content_str)
+
+        ddl_keywords = (
+            "CREATE DATABASE", "DROP DATABASE", "CREATE TABLE", "DROP TABLE",
+            "ALTER TABLE", "TRUNCATE", "CREATE INDEX", "DROP INDEX",
+            "CREATE SEQUENCE", "DROP SEQUENCE", "CREATE SCHEMA", "DROP SCHEMA",
+            "CREATE EXTENSION", "ALTER DATABASE", "ALTER SCHEMA", "SET ",
+            "SELECT PG_CATALOG", "USE "
+        )
 
         ddl_statements = []
         dml_statements = []
-        for raw_stmt in raw_statements:
-            stmt = raw_stmt.strip()
-            if not stmt:
+        for stmt in raw_statements:
+            clean_stmt = strip_leading_comments(stmt)
+            if not clean_stmt:
                 continue
-            upper = stmt.upper()
-            if any(upper.startswith(kw) for kw in ["CREATE DATABASE", "DROP DATABASE", "CREATE TABLE", "DROP TABLE", "ALTER TABLE", "TRUNCATE", "CREATE INDEX", "DROP INDEX", "CREATE SEQUENCE", "DROP SEQUENCE", "CREATE SCHEMA", "DROP SCHEMA", "CREATE EXTENSION", "ALTER DATABASE", "ALTER SCHEMA", "SET ", "SELECT pg_catalog"]):
+            upper = clean_stmt.upper()
+            if any(upper.startswith(kw) for kw in ddl_keywords):
                 ddl_statements.append(stmt)
             else:
                 dml_statements.append(stmt)
@@ -187,17 +215,22 @@ async def import_database(
         total_executed = 0
 
         checker = SQLSafetyChecker()
-        for stmt in ddl_statements + dml_statements:
-            is_safe, error = checker.check_all(stmt, context="import")
-            if not is_safe:
-                return {"status": "error", "message": f"Database Import Blocked: {error}"}
+        if checker.has_active_rules:
+            for stmt in ddl_statements + dml_statements:
+                is_safe, error = checker.check_all(stmt, context="import")
+                if not is_safe:
+                    return {"status": "error", "message": f"Database Import Blocked: {error}"}
 
+        # 1. Execute DDL statements on bootstrap database
         if ddl_statements:
             ddl_engine = create_engine(make_url(bootstrap_db), isolation_level="AUTOCOMMIT")
             with ddl_engine.connect() as conn:
                 for stmt in ddl_statements:
                     try:
-                        conn.execute(text(stmt))
+                        try:
+                            conn.exec_driver_sql(stmt)
+                        except Exception:
+                            conn.execute(text(stmt))
                         total_executed += 1
                     except Exception as stmt_err:
                         err_msg = str(stmt_err).lower()
@@ -211,13 +244,17 @@ async def import_database(
         if create_db_match:
             current_db = create_db_match.group(2)
 
+        # 2. Execute DML statements on target database
         if dml_statements:
             try:
                 dml_engine = create_engine(make_url(current_db))
                 with dml_engine.begin() as conn:
                     for stmt in dml_statements:
                         try:
-                            conn.execute(text(stmt))
+                            try:
+                                conn.exec_driver_sql(stmt)
+                            except Exception:
+                                conn.execute(text(stmt))
                             total_executed += 1
                         except Exception as stmt_err:
                             logger.warning(f"DML statement error: {stmt[:60]}... {str(stmt_err)}")
@@ -228,13 +265,29 @@ async def import_database(
                 with fallback_engine.begin() as conn:
                     for stmt in dml_statements:
                         try:
-                            conn.execute(text(stmt))
+                            try:
+                                conn.exec_driver_sql(stmt)
+                            except Exception:
+                                conn.execute(text(stmt))
                             total_executed += 1
                         except Exception as stmt_err:
                             logger.warning(f"DML (fallback) error: {stmt[:60]}... {str(stmt_err)}")
                 fallback_engine.dispose()
 
-        return {"status": "success", "message": f"Database import completed. Executed {total_executed} SQL statements in database '{current_db}'."}
+        return {
+            "status": "success",
+            "message": f"Database import completed. Executed {total_executed} SQL statements in database '{current_db}'."
+        }
     except Exception as e:
         logger.exception(f"Database Import Failed: {mask_password(str(e))}")
         return {"status": "error", "message": f"Database Import Failed: {mask_password(str(e))}"}
+
+
+@router.post("/import/database")
+async def import_database(
+    file: UploadFile = File(...),
+    db_config: str = Form(...),
+    target_database: str = Form("")
+):
+    content = await file.read()
+    return await asyncio.to_thread(_do_import_database, content, db_config, target_database)

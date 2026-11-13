@@ -25,6 +25,7 @@ function getProtectionLabel(rule) {
 
 export function useConnection() {
   const [connections, setConnections] = useState([]);
+  const [isConnectionsLoaded, setIsConnectionsLoaded] = useState(false);
   const [activeConnectionId, setActiveConnectionId] = useState(null);
   const [activeDatabase, setActiveDatabase] = useState(null);
   const [activeSchemaName, setActiveSchemaName] = useState(null);
@@ -82,11 +83,16 @@ export function useConnection() {
   const loadSavedConnections = useCallback(async () => {
     try {
       const saved = await storageService.getItems('connections');
-      if (saved && saved.length > 0) {
+      if (saved && Array.isArray(saved) && saved.length > 0) {
         setConnections(saved);
+        setActiveConnectionId(prev => prev || saved[0].id);
+        const firstDb = saved[0].databases?.[0] || saved[0].config?.database || '';
+        setActiveDatabase(prev => prev || firstDb);
       }
     } catch (err) {
       console.error("Failed to load saved connections:", err);
+    } finally {
+      setIsConnectionsLoaded(true);
     }
   }, []);
 
@@ -364,6 +370,7 @@ export function useConnection() {
 
   return {
     connections, setConnections,
+    isConnectionsLoaded,
     activeConnectionId, setActiveConnectionId,
     activeDatabase, setActiveDatabase,
     activeSchemaName, setActiveSchemaName,

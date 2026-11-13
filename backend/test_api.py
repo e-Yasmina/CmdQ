@@ -899,6 +899,59 @@ class TestImport:
         )
         assert resp.status_code == 422
 
+    def test_import_database_success(self, db_config, mock_engine):
+        sql_content = b"""-- Native SQL Dump
+CREATE TABLE test_tbl (id INT, name VARCHAR(50));
+INSERT INTO test_tbl VALUES (1, 'Alice');
+INSERT INTO test_tbl VALUES (2, 'Bob; and semi-colon');
+"""
+        resp = client.post(
+            "/import/database",
+            data={
+                "db_config": json.dumps(db_config),
+                "target_database": "test_db"
+            },
+            files={"file": ("dump.sql", sql_content, "application/sql")}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+        assert "Database import completed" in body["message"]
+
+    def test_import_database_with_odd_quotes_and_comments(self, db_config, mock_engine):
+        sql_content = b"""-- It's a comment with an unclosed apostrophe
+CREATE TABLE test_tbl (id INT, note TEXT);
+-- Don't delete this!
+INSERT INTO test_tbl VALUES (1, 'User\'s test note');
+"""
+        resp = client.post(
+            "/import/database",
+            data={
+                "db_config": json.dumps(db_config),
+                "target_database": "test_db"
+            },
+            files={"file": ("dump.sql", sql_content, "application/sql")}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+
+    def test_scan_sql(self):
+        sql_content = b"""-- Table structure
+CREATE TABLE users (id INT, name VARCHAR(50));
+INSERT INTO users VALUES (1, 'Alice');
+"""
+        resp = client.post(
+            "/import/scan",
+            files={"file": ("test.sql", sql_content, "application/sql")},
+            data={"format": "sql"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "success"
+        assert body["report"]["table_count"] == 1
+        assert body["report"]["row_count"] == 1
+
 
 # ===========================================================================
 # 25.  POST /etl/migrate

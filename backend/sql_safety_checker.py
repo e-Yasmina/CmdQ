@@ -245,12 +245,19 @@ class SQLSafetyChecker:
                 return rule
         return None
 
+    @property
+    def has_active_rules(self) -> bool:
+        """Check if any active protection rules (non-NONE) are loaded."""
+        return any(rule.level != ProtectionLevel.NONE for rule in self.rules)
+
     def check_destructive(self, sql: str) -> Optional[str]:
         """Check if SQL is destructive. Returns error or None."""
         return self._is_destructive(sql)
 
     def check_protected(self, sql: str) -> Optional[str]:
         """Check if SQL targets a fully-protected item. Returns error or None."""
+        if not self.has_active_rules:
+            return None
         refs = self._extract_table_refs(sql)
         for table_ref, _, _ in refs:
             rule = self._find_matching_rule(table_ref)
@@ -266,6 +273,8 @@ class SQLSafetyChecker:
 
         Returns error or None.
         """
+        if not self.has_active_rules:
+            return None
         # Collect (table_ref, write_op) pairs for this SQL
         sql_writes = []
         for table_ref, access_type, write_op in self._extract_table_refs(sql):

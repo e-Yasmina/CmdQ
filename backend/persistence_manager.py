@@ -25,29 +25,37 @@ class PersistenceManager:
                     json.dump([], f)
 
     def get_items(self, key):
-        file_path = self.files[key]
-        try:
-            with portalocker.Lock(file_path, mode='r', encoding='utf-8',
-                                 flags=portalocker.LOCK_SH | portalocker.LOCK_NB,
-                                 timeout=5) as f:
-                return json.load(f)
-        except portalocker.LockException:
-            logging.error(f"Could not acquire shared lock for {key}")
+        file_path = self.files.get(key)
+        if not file_path or not os.path.exists(file_path):
             return []
+        try:
+            try:
+                with portalocker.Lock(file_path, mode='r', encoding='utf-8', timeout=5) as f:
+                    return json.load(f)
+            except portalocker.LockException:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         except Exception as e:
             logging.error(f"Error reading {key}: {e}")
             return []
 
     def save_item(self, key, item):
-        file_path = self.files[key]
+        file_path = self.files.get(key)
+        if not file_path:
+            return False
         try:
-            with portalocker.Lock(file_path, mode='a+', encoding='utf-8',
-                                 flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
-                                 timeout=5) as f:
+            try:
+                f_ctx = portalocker.Lock(file_path, mode='r+', encoding='utf-8',
+                                         flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+                                         timeout=5)
+            except portalocker.LockException:
+                f_ctx = open(file_path, 'r+', encoding='utf-8')
+
+            with f_ctx as f:
                 f.seek(0)
                 try:
                     items = json.load(f)
-                except json.JSONDecodeError:
+                except Exception:
                     items = []
                 if 'id' in item:
                     for i, existing in enumerate(items):
@@ -62,28 +70,35 @@ class PersistenceManager:
                 f.truncate()
                 json.dump(items, f, indent=4)
             return True
-        except portalocker.LockException:
-            logging.error(f"Could not acquire exclusive lock for {key}")
+        except Exception as e:
+            logging.error(f"Error saving {key}: {e}")
             return False
 
     def delete_item(self, key, item_id):
-        file_path = self.files[key]
+        file_path = self.files.get(key)
+        if not file_path:
+            return False
         try:
-            with portalocker.Lock(file_path, mode='a+', encoding='utf-8',
-                                 flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
-                                 timeout=5) as f:
+            try:
+                f_ctx = portalocker.Lock(file_path, mode='r+', encoding='utf-8',
+                                         flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+                                         timeout=5)
+            except portalocker.LockException:
+                f_ctx = open(file_path, 'r+', encoding='utf-8')
+
+            with f_ctx as f:
                 f.seek(0)
                 try:
                     items = json.load(f)
-                except json.JSONDecodeError:
+                except Exception:
                     items = []
                 items = [i for i in items if i.get('id') != item_id]
                 f.seek(0)
                 f.truncate()
                 json.dump(items, f, indent=4)
             return True
-        except portalocker.LockException:
-            logging.error(f"Could not acquire exclusive lock for {key}")
+        except Exception as e:
+            logging.error(f"Error deleting {key}: {e}")
             return False
 
 

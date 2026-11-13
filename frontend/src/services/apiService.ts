@@ -12,6 +12,23 @@ async function handleIpcCall(callPromise: Promise<any>, fallbackErrorMsg = "Requ
     return res.data;
 }
 
+function fileToBase64(file: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = reader.result as string;
+            const commaIndex = result.indexOf(',');
+            if (commaIndex !== -1) {
+                resolve(result.slice(commaIndex + 1));
+            } else {
+                resolve(result);
+            }
+        };
+        reader.onerror = (error) => reject(error);
+        reader.readAsDataURL(file);
+    });
+}
+
 async function convertFormDataToUploadPayload(formData: FormData) {
     const files: Record<string, { name: string; data: string; type: string }> = {};
     const body: Record<string, any> = {};
@@ -19,13 +36,7 @@ async function convertFormDataToUploadPayload(formData: FormData) {
     for (const [key, val] of (formData as any).entries()) {
         if (val instanceof File || val instanceof Blob) {
             const file = val as File;
-            const buffer = await file.arrayBuffer();
-            const bytes = new Uint8Array(buffer);
-            let binary = '';
-            for (let i = 0; i < bytes.byteLength; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            const base64Str = btoa(binary);
+            const base64Str = await fileToBase64(file);
             files[key] = {
                 name: file.name || 'uploaded_file',
                 data: base64Str,
@@ -338,7 +349,9 @@ export const apiService = {
     importTable: async (formData: FormData) => {
         if (window.electronAPI?.importTable) {
             const uploadPayload = await convertFormDataToUploadPayload(formData);
-            return handleIpcCall(window.electronAPI.importTable(uploadPayload), "Failed to import table");
+            const data = await handleIpcCall(window.electronAPI.importTable(uploadPayload), "Failed to import table");
+            if (data?.status === "error") throw new Error(data.message || "Failed to import table");
+            return data;
         }
         const res = await fetch(`${API_BASE_URL}/import/table`, {
             method: "POST",
@@ -346,13 +359,16 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to import table");
+        if (data?.status === "error") throw new Error(data.message || "Failed to import table");
         return data;
     },
 
     importDatabase: async (formData: FormData) => {
         if (window.electronAPI?.importDatabase) {
             const uploadPayload = await convertFormDataToUploadPayload(formData);
-            return handleIpcCall(window.electronAPI.importDatabase(uploadPayload), "Failed to import database");
+            const data = await handleIpcCall(window.electronAPI.importDatabase(uploadPayload), "Failed to import database");
+            if (data?.status === "error") throw new Error(data.message || "Failed to import database");
+            return data;
         }
         const res = await fetch(`${API_BASE_URL}/import/database`, {
             method: "POST",
@@ -360,13 +376,16 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to import database");
+        if (data?.status === "error") throw new Error(data.message || "Failed to import database");
         return data;
     },
 
     scanImport: async (formData: FormData) => {
         if (window.electronAPI?.scanImport) {
             const uploadPayload = await convertFormDataToUploadPayload(formData);
-            return handleIpcCall(window.electronAPI.scanImport(uploadPayload), "Failed to scan import file");
+            const data = await handleIpcCall(window.electronAPI.scanImport(uploadPayload), "Failed to scan import file");
+            if (data?.status === "error") throw new Error(data.message || "Failed to scan import file");
+            return data;
         }
         const res = await fetch(`${API_BASE_URL}/import/scan`, {
             method: "POST",
@@ -374,12 +393,15 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to scan import file");
+        if (data?.status === "error") throw new Error(data.message || "Failed to scan import file");
         return data;
     },
 
     copyDatabase: async (payload: any) => {
         if (window.electronAPI?.copyDatabase) {
-            return handleIpcCall(window.electronAPI.copyDatabase(payload), "Failed to copy database");
+            const data = await handleIpcCall(window.electronAPI.copyDatabase(payload), "Failed to copy database");
+            if (data?.status === "error") throw new Error(data.message || "Failed to copy database");
+            return data;
         }
         const res = await fetch(`${API_BASE_URL}/database/copy`, {
             method: "POST",
@@ -388,12 +410,15 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to copy database");
+        if (data?.status === "error") throw new Error(data.message || "Failed to copy database");
         return data;
     },
 
     migrateData: async (payload: any) => {
         if (window.electronAPI?.migrateData) {
-            return handleIpcCall(window.electronAPI.migrateData(payload), "Failed to migrate data");
+            const data = await handleIpcCall(window.electronAPI.migrateData(payload), "Failed to migrate data");
+            if (data?.status === "error") throw new Error(data.message || "Failed to migrate data");
+            return data;
         }
         const res = await fetch(`${API_BASE_URL}/etl/migrate`, {
             method: "POST",
@@ -402,6 +427,7 @@ export const apiService = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || "Failed to migrate data");
+        if (data?.status === "error") throw new Error(data.message || "Failed to migrate data");
         return data;
     },
 

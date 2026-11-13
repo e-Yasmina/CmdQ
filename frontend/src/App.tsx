@@ -608,7 +608,7 @@ function App() {
   return (
     <div className="h-screen w-screen flex bg-background text-textPrimary font-ui flex-row relative">
 
-      {(conn.connections.length === 0 || conn.showConnectionForm) && (
+      {conn.isConnectionsLoaded && (conn.connections.length === 0 || conn.showConnectionForm) && (
         <ConnectionForm
           existingConnections={conn.connections}
           onConnected={handleConnected}
